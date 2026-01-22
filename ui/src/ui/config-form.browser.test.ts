@@ -1,7 +1,7 @@
 import { render } from "lit";
 import { describe, expect, it, vi } from "vitest";
 
-import { analyzeConfigSchema, renderConfigForm } from "./views/config-form";
+import { analyzeConfigSchema, renderConfigForm, SECTION_META } from "./views/config-form";
 
 const rootSchema = {
   type: "object",
@@ -40,6 +40,10 @@ const rootSchema = {
 };
 
 describe("config form renderer", () => {
+  it("exposes section metadata", () => {
+    expect(SECTION_META.env.label).toBe("Environment Variables");
+  });
+
   it("renders inputs and patches values", () => {
     const onPatch = vi.fn();
     const container = document.createElement("div");
