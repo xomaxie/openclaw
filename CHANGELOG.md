@@ -20,6 +20,7 @@ Docs: https://docs.clawd.bot
 
 ### Fixes
 - Agents: ignore IDENTITY.md template placeholders when parsing identity to avoid placeholder replies. (#1556)
+- Agents: drop orphaned OpenAI Responses reasoning blocks on model switches. (#1562) Thanks @roshanasingh4.
 - Docker: update gateway command in docker-compose and Hetzner guide. (#1514)
 - Sessions: reject array-backed session stores to prevent silent wipes. (#1469)
 - Voice wake: auto-save wake words on blur/submit across iOS/Android and align limits with macOS.
