@@ -13,6 +13,8 @@ import type { ImageContent } from "../commands/agent/types.js";
 import type { GatewayHttpResponsesConfig } from "../config/types.gateway.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import { createDefaultDeps } from "../cli/deps.js";
+import { loadConfig } from "../config/config.js";
+import { resolveAgentMainSessionKey, resolveStorePath, updateLastRoute } from "../config/sessions.js";
 import { agentCommand } from "../commands/agent.js";
 import { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
 import { logWarn } from "../logger.js";
@@ -486,6 +488,33 @@ export async function handleOpenResponsesHttpRequest(
   const agentId = resolveAgentIdForRequest({ req, model });
   const sessionKey = resolveOpenResponsesSessionKey({ req, agentId, user });
 
+  const explicitSessionKeyHeaderRaw = req.headers["x-openclaw-session-key"];
+  const explicitSessionKeyHeader =
+    typeof explicitSessionKeyHeaderRaw === "string"
+      ? explicitSessionKeyHeaderRaw.trim()
+      : Array.isArray(explicitSessionKeyHeaderRaw)
+        ? (explicitSessionKeyHeaderRaw[0] ?? "").trim()
+        : "";
+
+  // GENESIS uses x-openclaw-session-key to pin a webchat session. Persist that
+  // routing as the agent main session's last route so isolated cron jobs can
+  // announce back without needing an explicit delivery.to.
+  if (explicitSessionKeyHeader) {
+    try {
+      const cfg = loadConfig();
+      const storePath = resolveStorePath(cfg.session?.store, { agentId });
+      const mainSessionKey = resolveAgentMainSessionKey({ cfg, agentId });
+      await updateLastRoute({
+        storePath,
+        sessionKey: mainSessionKey,
+        channel: "genesis",
+        to: explicitSessionKeyHeader,
+      });
+    } catch (err) {
+      logWarn(`openresponses: failed to update last route: ${String(err)}`);
+    }
+  }
+
   // Build prompt from input
   const prompt = buildAgentPrompt(payload.input);
 
@@ -525,6 +554,7 @@ export async function handleOpenResponsesHttpRequest(
       const result = await agentCommand(
         {
           message: prompt.message,
+          model,
           images: images.length > 0 ? images : undefined,
           clientTools: resolvedClientTools.length > 0 ? resolvedClientTools : undefined,
           extraSystemPrompt: extraSystemPrompt || undefined,
@@ -765,6 +795,7 @@ export async function handleOpenResponsesHttpRequest(
       const result = await agentCommand(
         {
           message: prompt.message,
+          model,
           images: images.length > 0 ? images : undefined,
           clientTools: resolvedClientTools.length > 0 ? resolvedClientTools : undefined,
           extraSystemPrompt: extraSystemPrompt || undefined,

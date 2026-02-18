@@ -19,6 +19,7 @@ import {
   isCliProvider,
   modelKey,
   resolveConfiguredModelRef,
+  resolveModelRefFromString,
   resolveThinkingDefault,
 } from "../agents/model-selection.js";
 import { runEmbeddedPiAgent } from "../agents/pi-embedded.js";
@@ -317,6 +318,30 @@ export async function agentCommand(
         model = storedModelOverride;
       }
     }
+
+    const explicitModelRaw = opts.model?.trim();
+    if (explicitModelRaw) {
+      const explicit = resolveModelRefFromString({
+        raw: explicitModelRaw,
+        defaultProvider,
+      });
+      if (!explicit) {
+        throw new Error(`Invalid model override "${explicitModelRaw}"`);
+      }
+      const candidateProvider = explicit.ref.provider;
+      const candidateModel = explicit.ref.model;
+      const key = modelKey(candidateProvider, candidateModel);
+      if (
+        !isCliProvider(candidateProvider, cfg) &&
+        allowedModelKeys.size > 0 &&
+        !allowedModelKeys.has(key)
+      ) {
+        throw new Error(`Model "${candidateProvider}/${candidateModel}" is not allowed.`);
+      }
+      provider = candidateProvider;
+      model = candidateModel;
+    }
+
     if (sessionEntry) {
       const authProfileId = sessionEntry.authProfileOverride;
       if (authProfileId) {
