@@ -122,6 +122,17 @@ function resolveFetchMaxCharsCap(fetch?: WebFetchConfig): number {
   return Math.max(100, Math.floor(raw));
 }
 
+function resolveFetchMaxResponseBytes(fetch?: WebFetchConfig): number | undefined {
+  const raw =
+    fetch && "maxResponseBytes" in fetch && typeof fetch.maxResponseBytes === "number"
+      ? fetch.maxResponseBytes
+      : undefined;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return undefined;
+  }
+  return Math.max(1, Math.floor(raw));
+}
+
 function resolveFirecrawlConfig(fetch?: WebFetchConfig): FirecrawlFetchConfig {
   if (!fetch || typeof fetch !== "object") {
     return undefined;
@@ -656,6 +667,7 @@ async function runWebFetch(params: {
   url: string;
   extractMode: ExtractMode;
   maxChars: number;
+  maxResponseBytes?: number;
   maxRedirects: number;
   timeoutSeconds: number;
   cacheTtlMs: number;
@@ -886,9 +898,9 @@ async function runWebFetch(params: {
         writeCache(FETCH_CACHE, cacheKey, payload, params.cacheTtlMs);
         return payload;
       }
-      const rawDetail = await readResponseText(res);
+      const rawDetailResult = await readResponseText(res, { maxBytes: params.maxResponseBytes });
       const detail = formatWebFetchErrorDetail({
-        detail: rawDetail,
+        detail: rawDetailResult.text,
         contentType: res.headers.get("content-type"),
         maxChars: DEFAULT_ERROR_MAX_CHARS,
       });
@@ -898,7 +910,13 @@ async function runWebFetch(params: {
 
     const contentType = res.headers.get("content-type") ?? "application/octet-stream";
     const normalizedContentType = normalizeContentType(contentType) ?? "application/octet-stream";
-    const body = await readResponseText(res);
+    const bodyResult = await readResponseText(res, { maxBytes: params.maxResponseBytes });
+    const body = bodyResult.text;
+    const responseTruncatedWarning = bodyResult.truncated
+      ? typeof params.maxResponseBytes === "number"
+        ? `Response body truncated after ${params.maxResponseBytes} bytes.`
+        : "Response body may be truncated."
+      : undefined;
 
     let title: string | undefined;
     let extractor = "raw";
@@ -969,6 +987,7 @@ async function runWebFetch(params: {
       fetchedAt: new Date().toISOString(),
       tookMs: Date.now() - start,
       text: wrapped.text,
+      warning: wrapWebFetchField(responseTruncatedWarning),
     };
     writeCache(FETCH_CACHE, cacheKey, payload, params.cacheTtlMs);
     return payload;
@@ -1065,6 +1084,7 @@ export function createWebFetchTool(options?: {
       const extractMode = readStringParam(params, "extractMode") === "text" ? "text" : "markdown";
       const maxChars = readNumberParam(params, "maxChars", { integer: true });
       const maxCharsCap = resolveFetchMaxCharsCap(fetch);
+      const maxResponseBytes = resolveFetchMaxResponseBytes(fetch);
       const result = await runWebFetch({
         url,
         extractMode,
@@ -1073,6 +1093,7 @@ export function createWebFetchTool(options?: {
           DEFAULT_FETCH_MAX_CHARS,
           maxCharsCap,
         ),
+        maxResponseBytes,
         maxRedirects: resolveMaxRedirects(fetch?.maxRedirects, DEFAULT_FETCH_MAX_REDIRECTS),
         timeoutSeconds: resolveTimeoutSeconds(fetch?.timeoutSeconds, DEFAULT_TIMEOUT_SECONDS),
         cacheTtlMs: resolveCacheTtlMs(fetch?.cacheTtlMinutes, DEFAULT_CACHE_TTL_MINUTES),
