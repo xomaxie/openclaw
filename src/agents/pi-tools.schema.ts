@@ -62,17 +62,26 @@ function mergePropertySchemas(existing: unknown, incoming: unknown): unknown {
   return existing;
 }
 
+function stripTopLevelSchemaRef(schema: Record<string, unknown>): Record<string, unknown> {
+  if (!("$schema" in schema)) {
+    return schema;
+  }
+  const { $schema: _ignoredSchemaRef, ...rest } = schema;
+  return rest;
+}
+
 export function normalizeToolParameters(
   tool: AnyAgentTool,
   options?: { modelProvider?: string },
 ): AnyAgentTool {
-  const schema =
+  const rawSchema =
     tool.parameters && typeof tool.parameters === "object"
       ? (tool.parameters as Record<string, unknown>)
       : undefined;
-  if (!schema) {
+  if (!rawSchema) {
     return tool;
   }
+  const schema = stripTopLevelSchemaRef(rawSchema);
 
   // Provider quirks:
   // - Gemini rejects several JSON Schema keywords, so we scrub those.
@@ -122,6 +131,9 @@ export function normalizeToolParameters(
       ? "oneOf"
       : null;
   if (!variantKey) {
+    if (schema !== rawSchema) {
+      return { ...tool, parameters: schema };
+    }
     return tool;
   }
   const variants = schema[variantKey] as unknown[];
