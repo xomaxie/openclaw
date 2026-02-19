@@ -1,7 +1,7 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@sinclair/typebox";
 import { describe, expect, it } from "vitest";
-import { toToolDefinitions } from "./pi-tool-definition-adapter.js";
+import { toClientToolDefinitions, toToolDefinitions } from "./pi-tool-definition-adapter.js";
 
 type ToolExecute = ReturnType<typeof toToolDefinitions>[number]["execute"];
 const extensionContext = {} as Parameters<ToolExecute>[4];
@@ -26,6 +26,24 @@ async function executeThrowingTool(name: string, callId: string) {
 }
 
 describe("pi tool definition adapter", () => {
+
+  it("aliases provider-unsafe built-in tool names", async () => {
+    const dottedTool = {
+      name: "sentinel.docs_search",
+      label: "Docs Search",
+      description: "search",
+      parameters: Type.Object({}),
+      execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    } satisfies AgentTool;
+
+    const defs = toToolDefinitions([dottedTool]);
+    const def = defs[0];
+    if (!def) throw new Error("missing tool definition");
+
+    expect(def.name).toMatch(/^[A-Za-z][A-Za-z0-9_-]*$/);
+    expect(def.name).not.toBe("sentinel.docs_search");
+  });
+
   it("wraps tool errors into a tool result", async () => {
     const result = await executeThrowingTool("boom", "call1");
 
@@ -47,3 +65,33 @@ describe("pi tool definition adapter", () => {
     });
   });
 });
+
+
+  it("aliases provider-unsafe client tool names and preserves callback name", async () => {
+    let callbackToolName = "";
+    const defs = toClientToolDefinitions(
+      [
+        {
+          type: "function",
+          function: {
+            name: "genesis.board_list",
+            description: "List board tasks",
+            parameters: Type.Object({ limit: Type.Optional(Type.Number()) }),
+          },
+        },
+      ],
+      (toolName) => {
+        callbackToolName = toolName;
+      },
+      { agentId: "main", sessionKey: "main" },
+    );
+
+    const def = defs[0];
+    if (!def) throw new Error("missing client tool definition");
+
+    expect(def.name).toMatch(/^[A-Za-z][A-Za-z0-9_-]*$/);
+    expect(def.name).not.toBe("genesis.board_list");
+
+    await def.execute("call3", { limit: 1 }, undefined, undefined, extensionContext);
+    expect(callbackToolName).toBe("genesis.board_list");
+  });

@@ -86,13 +86,45 @@ function splitToolExecuteArgs(args: ToolExecuteArgsAny): {
   };
 }
 
+const PROVIDER_TOOL_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
+function toProviderSafeToolName(rawName: string): string {
+  const trimmed = rawName.trim();
+  if (!trimmed) return "tool";
+  if (PROVIDER_TOOL_NAME_RE.test(trimmed)) return trimmed;
+
+  let normalized = trimmed.replace(/[^A-Za-z0-9_-]+/g, "_");
+  normalized = normalized.replace(/_+/g, "_").replace(/-+/g, "-").replace(/^[_-]+|[_-]+$/g, "");
+  if (!normalized) normalized = "tool";
+  if (!/^[A-Za-z]/.test(normalized)) normalized = `tool_${normalized}`;
+  if (!PROVIDER_TOOL_NAME_RE.test(normalized)) {
+    normalized = normalized.replace(/[^A-Za-z0-9_-]/g, "_");
+    if (!/^[A-Za-z]/.test(normalized)) normalized = `tool_${normalized}`;
+  }
+  return normalized;
+}
+
+function allocateProviderSafeToolName(rawName: string, usedNames: Set<string>): string {
+  const base = toProviderSafeToolName(rawName);
+  let candidate = base;
+  let suffix = 2;
+  while (usedNames.has(candidate)) {
+    candidate = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  usedNames.add(candidate);
+  return candidate;
+}
+
 export function toToolDefinitions(tools: AnyAgentTool[]): ToolDefinition[] {
+  const usedProviderToolNames = new Set<string>();
   return tools.map((tool) => {
     const name = tool.name || "tool";
+    const wireName = allocateProviderSafeToolName(name, usedProviderToolNames);
     const normalizedName = normalizeToolName(name);
     const beforeHookWrapped = isToolWrappedWithBeforeToolCallHook(tool);
     return {
-      name,
+      name: wireName,
       label: tool.label ?? name,
       description: tool.description ?? "",
       parameters: tool.parameters,
@@ -195,10 +227,12 @@ export function toClientToolDefinitions(
   onClientToolCall?: (toolName: string, params: Record<string, unknown>) => void,
   hookContext?: HookContext,
 ): ToolDefinition[] {
+  const usedProviderToolNames = new Set<string>();
   return tools.map((tool) => {
     const func = tool.function;
+    const wireName = allocateProviderSafeToolName(func.name, usedProviderToolNames);
     return {
-      name: func.name,
+      name: wireName,
       label: func.name,
       description: func.description ?? "",
       parameters: func.parameters as ToolDefinition["parameters"],
