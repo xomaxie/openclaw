@@ -72,6 +72,7 @@ type FirecrawlFetchConfig =
       onlyMainContent?: boolean;
       maxAgeMs?: number;
       timeoutSeconds?: number;
+      aliasWebFetch?: boolean;
     }
   | undefined;
 
@@ -171,6 +172,13 @@ function resolveFirecrawlMaxAgeMsOrDefault(firecrawl?: FirecrawlFetchConfig): nu
     return resolved;
   }
   return DEFAULT_FIRECRAWL_MAX_AGE_MS;
+}
+
+function resolveFirecrawlAliasWebFetch(firecrawl?: FirecrawlFetchConfig): boolean {
+  if (typeof firecrawl?.aliasWebFetch === "boolean") {
+    return firecrawl.aliasWebFetch;
+  }
+  return false;
 }
 
 function resolveMaxChars(value: unknown, fallback: number, cap: number): number {
@@ -386,6 +394,7 @@ async function runWebFetch(params: {
   firecrawlBaseUrl: string;
   firecrawlOnlyMainContent: boolean;
   firecrawlMaxAgeMs: number;
+  firecrawlAliasWebFetch: boolean;
   firecrawlProxy: "auto" | "basic" | "stealth";
   firecrawlStoreInCache: boolean;
   firecrawlTimeoutSeconds: number;
@@ -409,6 +418,51 @@ async function runWebFetch(params: {
   }
 
   const start = Date.now();
+  if (params.firecrawlAliasWebFetch) {
+    if (!params.firecrawlEnabled || !params.firecrawlApiKey) {
+      throw new Error(
+        "Web fetch alias mode requires tools.web.fetch.firecrawl.enabled with a Firecrawl API key.",
+      );
+    }
+    const firecrawl = await fetchFirecrawlContent({
+      url: params.url,
+      extractMode: params.extractMode,
+      apiKey: params.firecrawlApiKey,
+      baseUrl: params.firecrawlBaseUrl,
+      onlyMainContent: params.firecrawlOnlyMainContent,
+      maxAgeMs: params.firecrawlMaxAgeMs,
+      proxy: params.firecrawlProxy,
+      storeInCache: params.firecrawlStoreInCache,
+      timeoutSeconds: params.firecrawlTimeoutSeconds,
+    });
+    const wrapped = wrapWebFetchContent(firecrawl.text, params.maxChars);
+    const wrappedTitle = firecrawl.title ? wrapWebFetchField(firecrawl.title) : undefined;
+    const payload = {
+      url: params.url, // Keep raw for tool chaining
+      finalUrl: firecrawl.finalUrl || params.url, // Keep raw
+      status: firecrawl.status ?? 200,
+      contentType: "text/markdown", // Protocol metadata, don't wrap
+      title: wrappedTitle,
+      extractMode: params.extractMode,
+      extractor: "firecrawl",
+      externalContent: {
+        untrusted: true,
+        source: "web_fetch",
+        wrapped: true,
+      },
+      truncated: wrapped.truncated,
+      length: wrapped.wrappedLength,
+      rawLength: wrapped.rawLength, // Actual content length, not wrapped
+      wrappedLength: wrapped.wrappedLength,
+      fetchedAt: new Date().toISOString(),
+      tookMs: Date.now() - start,
+      text: wrapped.text,
+      warning: wrapWebFetchField(firecrawl.warning),
+    };
+    writeCache(FETCH_CACHE, cacheKey, payload, params.cacheTtlMs);
+    return payload;
+  }
+
   let res: Response;
   let release: (() => Promise<void>) | null = null;
   let finalUrl = params.url;
@@ -681,6 +735,7 @@ export function createWebFetchTool(options?: {
   const firecrawlBaseUrl = resolveFirecrawlBaseUrl(firecrawl);
   const firecrawlOnlyMainContent = resolveFirecrawlOnlyMainContent(firecrawl);
   const firecrawlMaxAgeMs = resolveFirecrawlMaxAgeMsOrDefault(firecrawl);
+  const firecrawlAliasWebFetch = resolveFirecrawlAliasWebFetch(firecrawl);
   const firecrawlTimeoutSeconds = resolveTimeoutSeconds(
     firecrawl?.timeoutSeconds ?? fetch?.timeoutSeconds,
     DEFAULT_TIMEOUT_SECONDS,
@@ -718,6 +773,7 @@ export function createWebFetchTool(options?: {
         firecrawlBaseUrl,
         firecrawlOnlyMainContent,
         firecrawlMaxAgeMs,
+        firecrawlAliasWebFetch,
         firecrawlProxy: "auto",
         firecrawlStoreInCache: true,
         firecrawlTimeoutSeconds,

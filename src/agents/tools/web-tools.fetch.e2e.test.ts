@@ -343,6 +343,41 @@ describe("web_fetch extraction fallbacks", () => {
     expect(details.text).toContain("firecrawl fallback");
   });
 
+  it("uses firecrawl as web_fetch alias when aliasWebFetch is enabled", async () => {
+    const seenUrls: string[] = [];
+    const mockFetch = vi.fn((input: RequestInfo) => {
+      const url = requestUrl(input);
+      seenUrls.push(url);
+      if (url.includes("api.firecrawl.dev")) {
+        return Promise.resolve(firecrawlResponse("firecrawl alias", "https://example.com/alias"));
+      }
+      throw new Error(`unexpected direct fetch: ${url}`);
+    });
+    // @ts-expect-error mock fetch
+    global.fetch = mockFetch;
+
+    const tool = createWebFetchTool({
+      config: {
+        tools: {
+          web: {
+            fetch: {
+              cacheTtlMinutes: 0,
+              firecrawl: { apiKey: "firecrawl-test", aliasWebFetch: true },
+            },
+          },
+        },
+      },
+      sandboxed: false,
+    });
+
+    const result = await tool?.execute?.("call", { url: "https://example.com/alias" });
+    const details = result?.details as { extractor?: string; text?: string };
+    expect(details.extractor).toBe("firecrawl");
+    expect(details.text).toContain("firecrawl alias");
+    expect(seenUrls.length).toBe(1);
+    expect(seenUrls[0]).toContain("api.firecrawl.dev");
+  });
+
   it("wraps external content and clamps oversized maxChars", async () => {
     const large = "a".repeat(80_000);
     const mockFetch = vi.fn(
