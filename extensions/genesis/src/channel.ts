@@ -1,0 +1,147 @@
+import type {
+  ChannelAccountSnapshot,
+  ChannelConfigAdapter,
+  ChannelConfigSchema,
+  ChannelMeta,
+  ChannelOutboundAdapter,
+  ChannelPlugin,
+  OpenClawConfig,
+} from 'openclaw/plugin-sdk';
+
+type GenesisAccount = {
+  accountId: string;
+  baseUrl: string;
+};
+
+function resolveGenesisBaseUrl(cfg: OpenClawConfig): string {
+  const cfgAny = cfg as unknown as { channels?: { genesis?: { baseUrl?: string } } };
+  const fromCfg = cfgAny.channels?.genesis?.baseUrl?.trim();
+  const fromEnv = process.env.GENESIS_BRIDGE_BASE_URL?.trim();
+  return fromCfg || fromEnv || 'http://genesis-core:18400';
+}
+
+const meta: ChannelMeta = {
+  id: 'genesis',
+  label: 'GENESIS',
+  selectionLabel: 'GENESIS (Local Bridge)',
+  detailLabel: 'GENESIS Bridge',
+  docsPath: '/channels/genesis',
+  docsLabel: 'genesis',
+  blurb: 'Deliver messages back into GENESIS webchat sessions.',
+  systemImage: 'bolt',
+};
+
+const config: ChannelConfigAdapter<GenesisAccount> = {
+  listAccountIds: () => ['default'],
+  resolveAccount: (cfg) => ({ accountId: 'default', baseUrl: resolveGenesisBaseUrl(cfg) }),
+  isEnabled: () => true,
+  isConfigured: () => true,
+  unconfiguredReason: () => '',
+  disabledReason: () => '',
+  describeAccount: (account): ChannelAccountSnapshot => ({
+    accountId: account.accountId,
+    name: 'GENESIS',
+    enabled: true,
+    configured: true,
+    baseUrl: account.baseUrl,
+  }),
+  resolveAllowFrom: () => [],
+  formatAllowFrom: ({ allowFrom }) => allowFrom.map((v) => String(v)),
+};
+
+const configSchema: ChannelConfigSchema = {
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      baseUrl: { type: 'string' },
+    },
+  },
+  uiHints: {
+    baseUrl: {
+      label: 'GENESIS Base URL',
+      help: 'Where to POST announcements (default: http://genesis-core:18400)',
+      advanced: true,
+    },
+  },
+};
+
+const outbound: ChannelOutboundAdapter = {
+  deliveryMode: 'direct',
+  resolveTarget: ({ to }) => {
+    const trimmed = typeof to === 'string' ? to.trim() : '';
+    if (!trimmed) {
+      return { ok: false, error: new Error('GENESIS delivery target missing: expected a chat session id (e.g. chat_XXXX)') };
+    }
+    return { ok: true, to: trimmed };
+  },
+  sendText: async (ctx) => {
+    const baseUrl = resolveGenesisBaseUrl(ctx.cfg).replace(/\/+$/, '');
+    const url = `${baseUrl}/api/openclaw/sessions/${encodeURIComponent(ctx.to)}/announce`;
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: ctx.text,
+        source: 'openclaw',
+        meta: {
+          channel: 'genesis',
+          replyToId: ctx.replyToId ?? undefined,
+          threadId: ctx.threadId ?? undefined,
+        },
+      }),
+    });
+
+    const rawText = await res.text();
+    if (!res.ok) {
+      throw new Error(`GENESIS delivery failed (${res.status}): ${rawText.slice(0, 200)}`);
+    }
+
+    let messageId = `genesis_${Date.now()}`;
+    try {
+      const j = JSON.parse(rawText) as { message_id?: string };
+      if (j && typeof j.message_id === 'string' && j.message_id.trim()) {
+        messageId = j.message_id.trim();
+      }
+    } catch {
+      // ignore
+    }
+
+    return { channel: 'genesis', messageId, meta: { sessionId: ctx.to } };
+  },
+  sendMedia: async (ctx) => {
+    const caption = ctx.text || '';
+    const url = ctx.mediaUrl ? String(ctx.mediaUrl) : '';
+    return await outbound.sendText({ ...ctx, text: [caption, url].filter(Boolean).join('\n') });
+  },
+};
+
+export const genesisPlugin: ChannelPlugin<GenesisAccount> = {
+  id: 'genesis',
+  meta,
+  capabilities: {
+    chatTypes: ['direct'],
+    reactions: false,
+    threads: false,
+    media: true,
+    polls: false,
+    nativeCommands: false,
+    blockStreaming: true,
+  },
+  reload: { configPrefixes: ['channels.genesis', 'genesis'] },
+  messaging: {
+    normalizeTarget: (raw) => {
+      const t = typeof raw === 'string' ? raw.trim() : '';
+      return t ? t : undefined;
+    },
+    targetResolver: {
+      // GENESIS targets are chat session ids (e.g. chat_XXXX). Keep it permissive.
+      looksLikeId: (raw) => Boolean(String(raw ?? '').trim()),
+      hint: '<genesis_session_id>',
+    },
+  },
+  config,
+  configSchema,
+  outbound,
+};

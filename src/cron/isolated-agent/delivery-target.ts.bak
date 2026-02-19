@@ -28,14 +28,9 @@ export async function resolveDeliveryTarget(
   mode: "explicit" | "implicit";
   error?: Error;
 }> {
-  const rawRequestedChannel =
-    typeof jobPayload.channel === "string" ? jobPayload.channel : "last";
-  const requestedChannel =
-    rawRequestedChannel !== "last" && rawRequestedChannel.trim().toLowerCase() === "webchat"
-      ? ("genesis" as ChannelId)
-      : rawRequestedChannel;
+  const requestedChannel = typeof jobPayload.channel === "string" ? jobPayload.channel : "last";
   const explicitTo = typeof jobPayload.to === "string" ? jobPayload.to : undefined;
-  const allowMismatchedLastTo = rawRequestedChannel === "last";
+  const allowMismatchedLastTo = requestedChannel === "last";
 
   const sessionCfg = cfg.session;
   const mainSessionKey = resolveAgentMainSessionKey({ cfg, agentId });

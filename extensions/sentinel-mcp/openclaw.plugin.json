@@ -1,0 +1,24 @@
+{
+  "id": "sentinel-mcp",
+  "name": "Sentinel MCP",
+  "description": "Expose Sentinel MCP tools (via mcp-gateway HTTP transport) as native OpenClaw tools.",
+  "version": "0.0.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "HTTP MCP endpoint (POST), e.g. http://mcp:18790/mcp"
+      },
+      "tokenEnv": {
+        "type": "string",
+        "description": "Env var name to read Bearer token from (optional)."
+      },
+      "token": {
+        "type": "string",
+        "description": "Bearer token override (optional)."
+      }
+    }
+  }
+}

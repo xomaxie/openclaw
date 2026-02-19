@@ -1,0 +1,14 @@
+{
+  "id": "genesis",
+  "name": "GENESIS",
+  "description": "GENESIS webchat bridge channel plugin",
+  "version": "0.0.0",
+  "channels": ["genesis"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "baseUrl": { "type": "string" }
+    }
+  }
+}
