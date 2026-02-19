@@ -428,7 +428,7 @@ export async function fetchFirecrawlContent(params: {
   };
 }
 
-function parseJsonText(value: string): unknown | null {
+function parseJsonText(value: string): unknown {
   const trimmed = value.trim();
   if (!trimmed || (!trimmed.startsWith("{") && !trimmed.startsWith("["))) {
     return null;
