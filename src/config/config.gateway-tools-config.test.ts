@@ -14,6 +14,21 @@ describe("gateway.tools config", () => {
     expect(res.ok).toBe(true);
   });
 
+  it("accepts tools.web.fetch.firecrawl.aliasWebFetch", () => {
+    const res = validateConfigObject({
+      tools: {
+        web: {
+          fetch: {
+            firecrawl: {
+              aliasWebFetch: true,
+            },
+          },
+        },
+      },
+    });
+    expect(res.ok).toBe(true);
+  });
+
   it("rejects invalid gateway.tools values", () => {
     const res = validateConfigObject({
       gateway: {
