@@ -242,6 +242,16 @@ export const OutputItemSchema = z.discriminatedUnion("type", [
       summary: z.string().optional(),
     })
     .strict(),
+  z
+    .object({
+      type: z.literal("mcp_call"),
+      id: z.string(),
+      name: z.string(),
+      status: z.enum(["success", "error"]),
+      meta: z.string().optional(),
+      error: z.string().optional(),
+    })
+    .strict(),
 ]);
 
 export type OutputItem = z.infer<typeof OutputItemSchema>;

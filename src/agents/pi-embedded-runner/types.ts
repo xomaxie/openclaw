@@ -47,6 +47,17 @@ export type EmbeddedPiRunMeta = {
     name: string;
     arguments: string;
   }>;
+  /**
+   * Internally executed tool calls (e.g. MCP/Sentinel/Firecrawl) surfaced for
+   * observability clients.
+   */
+  executedToolCalls?: Array<{
+    id?: string;
+    name: string;
+    status: "success" | "error";
+    meta?: string;
+    error?: string;
+  }>;
 };
 
 export type EmbeddedPiRunResult = {

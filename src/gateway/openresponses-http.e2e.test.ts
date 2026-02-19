@@ -418,6 +418,42 @@ describe("OpenResponses HTTP API (e2e)", () => {
       expect(content[0]?.text).toBe("hello");
       await ensureResponseConsumed(resShape);
 
+      agentCommand.mockReset();
+      agentCommand.mockResolvedValueOnce({
+        payloads: [{ text: "hello" }],
+        meta: {
+          executedToolCalls: [
+            {
+              id: "mcp_1",
+              name: "firecrawl.firecrawl_search",
+              status: "success",
+              meta: '{"query":"best restaurants"}',
+            },
+            {
+              id: "mcp_2",
+              name: "sentinel_mcp_tools_call",
+              status: "error",
+              error: "upstream timeout",
+            },
+          ],
+        },
+      } as never);
+      const resObservedTools = await postResponses(port, {
+        stream: false,
+        model: "openclaw",
+        input: "hi",
+      });
+      expect(resObservedTools.status).toBe(200);
+      const observedToolsJson = (await resObservedTools.json()) as Record<string, unknown>;
+      const observedOutput = observedToolsJson.output as Array<Record<string, unknown>>;
+      const observedToolItems = observedOutput.filter((entry) => entry.type === "mcp_call");
+      expect(observedToolItems.length).toBe(2);
+      expect(observedToolItems[0]?.name).toBe("firecrawl.firecrawl_search");
+      expect(observedToolItems[0]?.status).toBe("success");
+      expect(observedToolItems[1]?.name).toBe("sentinel_mcp_tools_call");
+      expect(observedToolItems[1]?.status).toBe("error");
+      await ensureResponseConsumed(resObservedTools);
+
       const resNoUser = await postResponses(port, {
         model: "openclaw",
         input: [{ type: "message", role: "system", content: "yo" }],

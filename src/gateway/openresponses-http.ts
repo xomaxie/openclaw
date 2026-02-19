@@ -321,6 +321,60 @@ function createAssistantOutputItem(params: {
   };
 }
 
+type ObservedToolCall = {
+  id?: string;
+  name: string;
+  status: "success" | "error";
+  meta?: string;
+  error?: string;
+};
+
+function extractExecutedToolCalls(meta: unknown): ObservedToolCall[] {
+  if (!meta || typeof meta !== "object") {
+    return [];
+  }
+  const candidate = (meta as { executedToolCalls?: unknown }).executedToolCalls;
+  if (!Array.isArray(candidate)) {
+    return [];
+  }
+  const calls: ObservedToolCall[] = [];
+  for (const item of candidate) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const id = (item as { id?: unknown }).id;
+    const name = (item as { name?: unknown }).name;
+    const status = (item as { status?: unknown }).status;
+    const metaText = (item as { meta?: unknown }).meta;
+    const errorText = (item as { error?: unknown }).error;
+    if (typeof name !== "string" || name.trim().length === 0) {
+      continue;
+    }
+    if (status !== "success" && status !== "error") {
+      continue;
+    }
+    calls.push({
+      id: typeof id === "string" && id.trim().length > 0 ? id : undefined,
+      name,
+      status,
+      meta: typeof metaText === "string" ? metaText : undefined,
+      error: typeof errorText === "string" ? errorText : undefined,
+    });
+  }
+  return calls;
+}
+
+function createObservedToolOutputItems(calls: ObservedToolCall[]): OutputItem[] {
+  return calls.map((call) => ({
+    type: "mcp_call",
+    id: call.id ?? `mcp_${randomUUID()}`,
+    name: call.name,
+    status: call.status,
+    meta: call.meta,
+    error: call.error,
+  }));
+}
+
 export async function handleOpenResponsesHttpRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -579,6 +633,7 @@ export async function handleOpenResponsesHttpRequest(
           ? (meta as { pendingToolCalls?: Array<{ id: string; name: string; arguments: string }> })
               .pendingToolCalls
           : undefined;
+      const observedToolItems = createObservedToolOutputItems(extractExecutedToolCalls(meta));
 
       // If agent called a client tool, return function_call instead of text
       if (stopReason === "tool_calls" && pendingToolCalls && pendingToolCalls.length > 0) {
@@ -596,6 +651,7 @@ export async function handleOpenResponsesHttpRequest(
               name: functionCall.name,
               arguments: functionCall.arguments,
             },
+            ...observedToolItems,
           ],
           usage,
         });
@@ -617,6 +673,7 @@ export async function handleOpenResponsesHttpRequest(
         status: "completed",
         output: [
           createAssistantOutputItem({ id: outputItemId, text: content, status: "completed" }),
+          ...observedToolItems,
         ],
         usage,
       });

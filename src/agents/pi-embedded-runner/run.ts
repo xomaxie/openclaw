@@ -923,6 +923,25 @@ export async function runEmbeddedPiAgent(
               agentDir: params.agentDir,
             });
           }
+          const executedToolCalls = [
+            ...attempt.toolMetas.map((entry, index) => ({
+              id: `mcp_${index + 1}`,
+              name: entry.toolName,
+              status: "success" as const,
+              meta: entry.meta,
+            })),
+            ...(attempt.lastToolError
+              ? [
+                  {
+                    id: `mcp_error_${Date.now()}`,
+                    name: attempt.lastToolError.toolName,
+                    status: "error" as const,
+                    meta: attempt.lastToolError.meta,
+                    error: attempt.lastToolError.error,
+                  },
+                ]
+              : []),
+          ];
           return {
             payloads: payloads.length ? payloads : undefined,
             meta: {
@@ -941,6 +960,8 @@ export async function runEmbeddedPiAgent(
                     },
                   ]
                 : undefined,
+              executedToolCalls:
+                executedToolCalls.length > 0 ? executedToolCalls : undefined,
             },
             didSendViaMessagingTool: attempt.didSendViaMessagingTool,
             messagingToolSentTexts: attempt.messagingToolSentTexts,
