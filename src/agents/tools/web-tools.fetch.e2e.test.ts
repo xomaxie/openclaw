@@ -343,21 +343,83 @@ describe("web_fetch extraction fallbacks", () => {
     expect(details.text).toContain("firecrawl fallback");
   });
 
-  it("uses firecrawl as web_fetch alias when aliasWebFetch is enabled", async () => {
-    const seenUrls: string[] = [];
-    const mockFetch = vi.fn((input: RequestInfo) => {
-      const url = requestUrl(input);
-      seenUrls.push(url);
-      if (url.includes("api.firecrawl.dev")) {
-        return Promise.resolve(firecrawlResponse("firecrawl alias", "https://example.com/alias"));
+  it("uses sentinel mcp firecrawl as web_fetch alias when aliasWebFetch is enabled", async () => {
+    const seenCalls: Array<{ url: string; method: string; body?: unknown }> = [];
+    const mockFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input as RequestInfo);
+      const method = typeof init?.method === "string" ? init.method : "GET";
+      let body: unknown;
+      if (typeof init?.body === "string") {
+        try {
+          body = JSON.parse(init.body);
+        } catch {
+          body = init.body;
+        }
       }
-      throw new Error(`unexpected direct fetch: ${url}`);
+      seenCalls.push({ url, method, body });
+
+      if (url === "https://sentinel.example/mcp") {
+        const rpc = body as { id?: number; method?: string };
+        if (rpc?.method === "initialize") {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            headers: makeHeaders({ "mcp-session-id": "sentinel-session" }),
+            text: async () => JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result: {} }),
+          } as Response);
+        }
+        if (rpc?.method === "initialized") {
+          return Promise.resolve({
+            ok: true,
+            status: 204,
+            headers: makeHeaders({ "mcp-session-id": "sentinel-session" }),
+            text: async () => "",
+          } as Response);
+        }
+        if (rpc?.method === "tools/call") {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            headers: makeHeaders({ "mcp-session-id": "sentinel-session" }),
+            text: async () =>
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: rpc.id,
+                result: {
+                  content: [
+                    {
+                      type: "text",
+                      text: JSON.stringify({
+                        markdown: "firecrawl alias via sentinel",
+                        metadata: {
+                          title: "Sentinel Title",
+                          sourceURL: "https://example.com/alias",
+                          statusCode: 200,
+                        },
+                      }),
+                    },
+                  ],
+                },
+              }),
+          } as Response);
+        }
+      }
+
+      throw new Error(`unexpected fetch: ${url}`);
     });
     // @ts-expect-error mock fetch
     global.fetch = mockFetch;
 
     const tool = createWebFetchTool({
       config: {
+        plugins: {
+          entries: {
+            "sentinel-mcp": {
+              enabled: true,
+              config: { url: "https://sentinel.example/mcp", token: "sentinel-token" },
+            },
+          },
+        },
         tools: {
           web: {
             fetch: {
@@ -373,9 +435,20 @@ describe("web_fetch extraction fallbacks", () => {
     const result = await tool?.execute?.("call", { url: "https://example.com/alias" });
     const details = result?.details as { extractor?: string; text?: string };
     expect(details.extractor).toBe("firecrawl");
-    expect(details.text).toContain("firecrawl alias");
-    expect(seenUrls.length).toBe(1);
-    expect(seenUrls[0]).toContain("api.firecrawl.dev");
+    expect(details.text).toContain("firecrawl alias via sentinel");
+    expect(seenCalls.map((x) => x.url)).not.toContain("https://api.firecrawl.dev/v2/scrape");
+    const sentinelCalls = seenCalls.filter((x) => x.url === "https://sentinel.example/mcp");
+    expect(sentinelCalls.length).toBe(3);
+    const toolCall = sentinelCalls.find(
+      (x) =>
+        typeof x.body === "object" &&
+        x.body !== null &&
+        "method" in x.body &&
+        (x.body as { method?: string }).method === "tools/call",
+    );
+    expect((toolCall?.body as { params?: { name?: string } } | undefined)?.params?.name).toBe(
+      "firecrawl.firecrawl_scrape",
+    );
   });
 
   it("wraps external content and clamps oversized maxChars", async () => {

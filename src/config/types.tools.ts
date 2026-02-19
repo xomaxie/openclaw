@@ -405,7 +405,7 @@ export type ToolsConfig = {
       firecrawl?: {
         /** Enable Firecrawl fallback (default: true when apiKey is set). */
         enabled?: boolean;
-        /** Route all web_fetch calls through Firecrawl instead of direct HTTP fetch. */
+        /** Route web_fetch through Sentinel MCP Firecrawl (fallback: direct Firecrawl API). */
         aliasWebFetch?: boolean;
         /** Firecrawl API key (optional; defaults to FIRECRAWL_API_KEY env var). */
         apiKey?: string;

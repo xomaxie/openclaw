@@ -108,7 +108,7 @@ export const FIELD_HELP: Record<string, string> = {
     "Use Readability to extract main content from HTML (fallbacks to basic HTML cleanup).",
   "tools.web.fetch.firecrawl.enabled": "Enable Firecrawl fallback for web_fetch (if configured).",
   "tools.web.fetch.firecrawl.aliasWebFetch":
-    "When true, web_fetch uses Firecrawl directly instead of direct HTTP fetch.",
+    "When true, web_fetch uses Sentinel MCP firecrawl.firecrawl_scrape (fallback: direct Firecrawl API).",
   "tools.web.fetch.firecrawl.apiKey": "Firecrawl API key (fallback: FIRECRAWL_API_KEY env var).",
   "tools.web.fetch.firecrawl.baseUrl":
     "Firecrawl base URL (e.g. https://api.firecrawl.dev or custom endpoint).",

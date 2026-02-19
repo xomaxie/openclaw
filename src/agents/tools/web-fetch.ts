@@ -37,6 +37,8 @@ const DEFAULT_FETCH_MAX_REDIRECTS = 3;
 const DEFAULT_ERROR_MAX_CHARS = 4_000;
 const DEFAULT_FIRECRAWL_BASE_URL = "https://api.firecrawl.dev";
 const DEFAULT_FIRECRAWL_MAX_AGE_MS = 172_800_000;
+const DEFAULT_SENTINEL_MCP_URL = "http://mcp:18790/mcp";
+const DEFAULT_SENTINEL_MCP_TOKEN_ENV = "OPENCLAW_GATEWAY_TOKEN";
 const DEFAULT_FETCH_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -75,6 +77,17 @@ type FirecrawlFetchConfig =
       aliasWebFetch?: boolean;
     }
   | undefined;
+
+type SentinelMcpAliasConfig = {
+  enabled: boolean;
+  url: string;
+  token?: string;
+};
+
+type JsonRpcResponse = {
+  error?: { message?: string };
+  result?: unknown;
+};
 
 function resolveFetchConfig(cfg?: OpenClawConfig): WebFetchConfig {
   const fetch = cfg?.tools?.web?.fetch;
@@ -179,6 +192,41 @@ function resolveFirecrawlAliasWebFetch(firecrawl?: FirecrawlFetchConfig): boolea
     return firecrawl.aliasWebFetch;
   }
   return false;
+}
+
+function readOptionalRecordString(input: unknown, key: string): string | undefined {
+  if (!input || typeof input !== "object") {
+    return undefined;
+  }
+  const raw = (input as Record<string, unknown>)[key];
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  return trimmed || undefined;
+}
+
+function resolveSentinelMcpAliasConfig(cfg?: OpenClawConfig): SentinelMcpAliasConfig {
+  const pluginEntry = cfg?.plugins?.entries?.["sentinel-mcp"];
+  const pluginConfig =
+    pluginEntry && typeof pluginEntry.config === "object" ? pluginEntry.config : undefined;
+  const url =
+    readOptionalRecordString(pluginConfig, "url") ||
+    normalizeSecretInput(process.env.SENTINEL_MCP_URL) ||
+    DEFAULT_SENTINEL_MCP_URL;
+  const tokenEnv =
+    readOptionalRecordString(pluginConfig, "tokenEnv") ||
+    normalizeSecretInput(process.env.SENTINEL_MCP_TOKEN_ENV) ||
+    DEFAULT_SENTINEL_MCP_TOKEN_ENV;
+  const token =
+    normalizeSecretInput(readOptionalRecordString(pluginConfig, "token")) ||
+    normalizeSecretInput(process.env[tokenEnv]) ||
+    undefined;
+  return {
+    enabled: pluginEntry?.enabled !== false,
+    url,
+    token,
+  };
 }
 
 function resolveMaxChars(value: unknown, fallback: number, cap: number): number {
@@ -380,6 +428,230 @@ export async function fetchFirecrawlContent(params: {
   };
 }
 
+function parseJsonText(value: string): unknown | null {
+  const trimmed = value.trim();
+  if (!trimmed || (!trimmed.startsWith("{") && !trimmed.startsWith("["))) {
+    return null;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+function readUnknownString(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function readUnknownNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function parseSentinelMcpFirecrawlResult(params: {
+  payload: JsonRpcResponse;
+  extractMode: ExtractMode;
+}): {
+  text: string;
+  title?: string;
+  finalUrl?: string;
+  status?: number;
+  warning?: string;
+} {
+  const result =
+    params.payload.result && typeof params.payload.result === "object"
+      ? (params.payload.result as Record<string, unknown>)
+      : {};
+  const content = Array.isArray(result.content) ? result.content : [];
+  let fallbackText = "";
+  const candidates: Array<Record<string, unknown>> = [];
+
+  const structured = result.structuredContent;
+  if (structured && typeof structured === "object") {
+    candidates.push(structured as Record<string, unknown>);
+  }
+
+  for (const item of content) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const typed = item as Record<string, unknown>;
+    if (typed.type === "text") {
+      const text = readUnknownString(typed.text) ?? "";
+      if (!fallbackText && text) {
+        fallbackText = text;
+      }
+      const parsed = parseJsonText(text);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        candidates.push(parsed as Record<string, unknown>);
+      }
+      continue;
+    }
+    if (typed.type === "json" && typed.json && typeof typed.json === "object") {
+      candidates.push(typed.json as Record<string, unknown>);
+    }
+  }
+
+  for (const candidate of candidates) {
+    const data =
+      candidate.data && typeof candidate.data === "object"
+        ? (candidate.data as Record<string, unknown>)
+        : candidate;
+    const markdown = readUnknownString(data.markdown);
+    const plain = readUnknownString(data.content);
+    const rawText = markdown || plain;
+    if (!rawText) {
+      continue;
+    }
+    const metadata =
+      data.metadata && typeof data.metadata === "object"
+        ? (data.metadata as Record<string, unknown>)
+        : {};
+    const warning = readUnknownString(candidate.warning) ?? readUnknownString(data.warning);
+    return {
+      text: params.extractMode === "text" ? markdownToText(rawText) : rawText,
+      title: readUnknownString(metadata.title) ?? readUnknownString(data.title),
+      finalUrl: readUnknownString(metadata.sourceURL) ?? readUnknownString(data.sourceURL),
+      status: readUnknownNumber(metadata.statusCode) ?? readUnknownNumber(data.statusCode),
+      warning,
+    };
+  }
+
+  if (fallbackText) {
+    return {
+      text: params.extractMode === "text" ? markdownToText(fallbackText) : fallbackText,
+    };
+  }
+
+  throw new Error("Sentinel MCP Firecrawl returned no content.");
+}
+
+async function fetchSentinelMcpJsonRpc(params: {
+  url: string;
+  token?: string;
+  sessionId?: string;
+  body: Record<string, unknown>;
+  timeoutSeconds: number;
+}): Promise<{
+  status: number;
+  sessionId?: string;
+  payload: JsonRpcResponse;
+}> {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
+  if (params.token) {
+    headers.authorization = `Bearer ${params.token}`;
+  }
+  if (params.sessionId) {
+    headers["mcp-session-id"] = params.sessionId;
+  }
+  const res = await fetch(params.url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(params.body),
+    signal: withTimeout(undefined, params.timeoutSeconds * 1000),
+  });
+  const text = await res.text();
+  const sessionId = res.headers.get("mcp-session-id") ?? undefined;
+  if (!text) {
+    return { status: res.status, sessionId, payload: {} };
+  }
+  let payload: JsonRpcResponse;
+  try {
+    payload = JSON.parse(text) as JsonRpcResponse;
+  } catch {
+    throw new Error(
+      `Sentinel MCP returned non-JSON (status=${res.status}): ${wrapWebContent(text.slice(0, 200), "web_fetch")}`,
+    );
+  }
+  return { status: res.status, sessionId, payload };
+}
+
+async function fetchFirecrawlViaSentinelMcp(params: {
+  url: string;
+  extractMode: ExtractMode;
+  sentinelUrl: string;
+  sentinelToken?: string;
+  onlyMainContent: boolean;
+  maxAgeMs: number;
+  timeoutSeconds: number;
+}): Promise<{
+  text: string;
+  title?: string;
+  finalUrl?: string;
+  status?: number;
+  warning?: string;
+}> {
+  const init = await fetchSentinelMcpJsonRpc({
+    url: params.sentinelUrl,
+    token: params.sentinelToken,
+    body: {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "openclaw-web-fetch", version: "0.0.0" },
+      },
+    },
+    timeoutSeconds: params.timeoutSeconds,
+  });
+  if (init.payload.error?.message) {
+    throw new Error(
+      `Sentinel MCP initialize failed: ${wrapWebContent(init.payload.error.message, "web_fetch")}`,
+    );
+  }
+  const sessionId = init.sessionId;
+  if (!sessionId) {
+    throw new Error("Sentinel MCP initialize did not return mcp-session-id.");
+  }
+
+  await fetchSentinelMcpJsonRpc({
+    url: params.sentinelUrl,
+    token: params.sentinelToken,
+    sessionId,
+    body: {
+      jsonrpc: "2.0",
+      method: "initialized",
+      params: {},
+    },
+    timeoutSeconds: params.timeoutSeconds,
+  });
+
+  const scrape = await fetchSentinelMcpJsonRpc({
+    url: params.sentinelUrl,
+    token: params.sentinelToken,
+    sessionId,
+    body: {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "firecrawl.firecrawl_scrape",
+        arguments: {
+          url: params.url,
+          formats: ["markdown"],
+          onlyMainContent: params.onlyMainContent,
+          maxAge: params.maxAgeMs,
+        },
+      },
+    },
+    timeoutSeconds: params.timeoutSeconds,
+  });
+  if (scrape.payload.error?.message) {
+    throw new Error(
+      `Sentinel MCP tools/call failed (firecrawl.firecrawl_scrape): ${wrapWebContent(scrape.payload.error.message, "web_fetch")}`,
+    );
+  }
+
+  return parseSentinelMcpFirecrawlResult({
+    payload: scrape.payload,
+    extractMode: params.extractMode,
+  });
+}
+
 async function runWebFetch(params: {
   url: string;
   extractMode: ExtractMode;
@@ -395,6 +667,9 @@ async function runWebFetch(params: {
   firecrawlOnlyMainContent: boolean;
   firecrawlMaxAgeMs: number;
   firecrawlAliasWebFetch: boolean;
+  sentinelMcpEnabled: boolean;
+  sentinelMcpUrl: string;
+  sentinelMcpToken?: string;
   firecrawlProxy: "auto" | "basic" | "stealth";
   firecrawlStoreInCache: boolean;
   firecrawlTimeoutSeconds: number;
@@ -419,22 +694,56 @@ async function runWebFetch(params: {
 
   const start = Date.now();
   if (params.firecrawlAliasWebFetch) {
-    if (!params.firecrawlEnabled || !params.firecrawlApiKey) {
+    let firecrawl:
+      | {
+          text: string;
+          title?: string;
+          finalUrl?: string;
+          status?: number;
+          warning?: string;
+        }
+      | undefined;
+    let aliasError: unknown;
+
+    if (params.sentinelMcpEnabled) {
+      try {
+        firecrawl = await fetchFirecrawlViaSentinelMcp({
+          url: params.url,
+          extractMode: params.extractMode,
+          sentinelUrl: params.sentinelMcpUrl,
+          sentinelToken: params.sentinelMcpToken,
+          onlyMainContent: params.firecrawlOnlyMainContent,
+          maxAgeMs: params.firecrawlMaxAgeMs,
+          timeoutSeconds: params.firecrawlTimeoutSeconds,
+        });
+      } catch (error) {
+        aliasError = error;
+      }
+    }
+
+    if (!firecrawl && params.firecrawlEnabled && params.firecrawlApiKey) {
+      firecrawl = await fetchFirecrawlContent({
+        url: params.url,
+        extractMode: params.extractMode,
+        apiKey: params.firecrawlApiKey,
+        baseUrl: params.firecrawlBaseUrl,
+        onlyMainContent: params.firecrawlOnlyMainContent,
+        maxAgeMs: params.firecrawlMaxAgeMs,
+        proxy: params.firecrawlProxy,
+        storeInCache: params.firecrawlStoreInCache,
+        timeoutSeconds: params.firecrawlTimeoutSeconds,
+      });
+    }
+
+    if (!firecrawl) {
+      if (aliasError instanceof Error) {
+        throw aliasError;
+      }
       throw new Error(
-        "Web fetch alias mode requires tools.web.fetch.firecrawl.enabled with a Firecrawl API key.",
+        "Web fetch alias mode requires Sentinel MCP (sentinel-mcp) or Firecrawl API credentials.",
       );
     }
-    const firecrawl = await fetchFirecrawlContent({
-      url: params.url,
-      extractMode: params.extractMode,
-      apiKey: params.firecrawlApiKey,
-      baseUrl: params.firecrawlBaseUrl,
-      onlyMainContent: params.firecrawlOnlyMainContent,
-      maxAgeMs: params.firecrawlMaxAgeMs,
-      proxy: params.firecrawlProxy,
-      storeInCache: params.firecrawlStoreInCache,
-      timeoutSeconds: params.firecrawlTimeoutSeconds,
-    });
+
     const wrapped = wrapWebFetchContent(firecrawl.text, params.maxChars);
     const wrappedTitle = firecrawl.title ? wrapWebFetchField(firecrawl.title) : undefined;
     const payload = {
@@ -736,6 +1045,7 @@ export function createWebFetchTool(options?: {
   const firecrawlOnlyMainContent = resolveFirecrawlOnlyMainContent(firecrawl);
   const firecrawlMaxAgeMs = resolveFirecrawlMaxAgeMsOrDefault(firecrawl);
   const firecrawlAliasWebFetch = resolveFirecrawlAliasWebFetch(firecrawl);
+  const sentinelMcp = resolveSentinelMcpAliasConfig(options?.config);
   const firecrawlTimeoutSeconds = resolveTimeoutSeconds(
     firecrawl?.timeoutSeconds ?? fetch?.timeoutSeconds,
     DEFAULT_TIMEOUT_SECONDS,
@@ -774,6 +1084,9 @@ export function createWebFetchTool(options?: {
         firecrawlOnlyMainContent,
         firecrawlMaxAgeMs,
         firecrawlAliasWebFetch,
+        sentinelMcpEnabled: sentinelMcp.enabled,
+        sentinelMcpUrl: sentinelMcp.url,
+        sentinelMcpToken: sentinelMcp.token,
         firecrawlProxy: "auto",
         firecrawlStoreInCache: true,
         firecrawlTimeoutSeconds,
