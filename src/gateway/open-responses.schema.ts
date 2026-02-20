@@ -264,6 +264,16 @@ export const UsageSchema = z.object({
 
 export type Usage = z.infer<typeof UsageSchema>;
 
+export const ResponseReasoningSchema = z
+  .object({
+    requested_effort: z.enum(["low", "medium", "high"]).optional(),
+    effective_effort: z.enum(["low", "medium", "high"]).optional(),
+    effective_thinking: z.string().optional(),
+  })
+  .strict();
+
+export type ResponseReasoning = z.infer<typeof ResponseReasoningSchema>;
+
 export const ResponseResourceSchema = z.object({
   id: z.string(),
   object: z.literal("response"),
@@ -279,6 +289,7 @@ export const ResponseResourceSchema = z.object({
       message: z.string(),
     })
     .optional(),
+  reasoning: ResponseReasoningSchema.optional(),
 });
 
 export type ResponseResource = z.infer<typeof ResponseResourceSchema>;

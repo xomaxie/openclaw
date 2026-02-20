@@ -1,3 +1,4 @@
+import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import type { SessionSystemPromptReport } from "../../config/sessions/types.js";
 import type { MessagingToolSend } from "../pi-embedded-messaging.js";
 
@@ -5,6 +6,7 @@ export type EmbeddedPiAgentMeta = {
   sessionId: string;
   provider: string;
   model: string;
+  thinkingLevel?: ThinkLevel;
   compactionCount?: number;
   promptTokens?: number;
   usage?: {

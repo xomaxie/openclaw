@@ -57,6 +57,7 @@ import {
   type CreateResponseBody,
   type ItemParam,
   type OutputItem,
+  type ResponseReasoning,
   type ResponseResource,
   type StreamingEvent,
   type Usage,
@@ -287,6 +288,49 @@ function extractUsageFromResult(result: unknown): Usage {
   );
 }
 
+function normalizeReasoningEffort(value: unknown): "low" | "medium" | "high" | undefined {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "low" || normalized === "medium" || normalized === "high") {
+    return normalized;
+  }
+  if (normalized === "xhigh") {
+    return "high";
+  }
+  return undefined;
+}
+
+function buildResponseReasoning(params: {
+  payload: CreateResponseBody;
+  result?: unknown;
+}): ResponseReasoning | undefined {
+  const requested = normalizeReasoningEffort(params.payload.reasoning?.effort);
+  const effectiveThinkingRaw =
+    (
+      (params.result as {
+        meta?: {
+          agentMeta?: {
+            thinkingLevel?: unknown;
+          };
+        };
+      } | null)?.meta?.agentMeta?.thinkingLevel ?? undefined
+    ) || undefined;
+  const effectiveThinking =
+    typeof effectiveThinkingRaw === "string" && effectiveThinkingRaw.trim().length > 0
+      ? effectiveThinkingRaw.trim()
+      : undefined;
+  const effectiveEffort = normalizeReasoningEffort(effectiveThinkingRaw) ?? requested;
+  if (!requested && !effectiveEffort && !effectiveThinking) {
+    return undefined;
+  }
+  return {
+    requested_effort: requested,
+    effective_effort: effectiveEffort,
+    effective_thinking: effectiveThinking,
+  };
+}
+
 function createResponseResource(params: {
   id: string;
   model: string;
@@ -294,6 +338,7 @@ function createResponseResource(params: {
   output: OutputItem[];
   usage?: Usage;
   error?: { code: string; message: string };
+  reasoning?: ResponseReasoning;
 }): ResponseResource {
   return {
     id: params.id,
@@ -304,6 +349,7 @@ function createResponseResource(params: {
     output: params.output,
     usage: params.usage ?? createEmptyUsage(),
     error: params.error,
+    reasoning: params.reasoning,
   };
 }
 
@@ -609,6 +655,7 @@ export async function handleOpenResponsesHttpRequest(
         {
           message: prompt.message,
           model,
+          thinkingOnce: payload.reasoning?.effort,
           images: images.length > 0 ? images : undefined,
           clientTools: resolvedClientTools.length > 0 ? resolvedClientTools : undefined,
           extraSystemPrompt: extraSystemPrompt || undefined,
@@ -622,6 +669,7 @@ export async function handleOpenResponsesHttpRequest(
         defaultRuntime,
         deps,
       );
+      const responseReasoning = buildResponseReasoning({ payload, result });
 
       const payloads = (result as { payloads?: Array<{ text?: string }> } | null)?.payloads;
       const usage = extractUsageFromResult(result);
@@ -654,6 +702,7 @@ export async function handleOpenResponsesHttpRequest(
             ...observedToolItems,
           ],
           usage,
+          reasoning: responseReasoning,
         });
         sendJson(res, 200, response);
         return true;
@@ -676,6 +725,7 @@ export async function handleOpenResponsesHttpRequest(
           ...observedToolItems,
         ],
         usage,
+        reasoning: responseReasoning,
       });
 
       sendJson(res, 200, response);
@@ -687,6 +737,7 @@ export async function handleOpenResponsesHttpRequest(
         status: "failed",
         output: [],
         error: { code: "api_error", message: "internal error" },
+        reasoning: buildResponseReasoning({ payload }),
       });
       sendJson(res, 500, response);
     }
@@ -704,6 +755,8 @@ export async function handleOpenResponsesHttpRequest(
   let closed = false;
   let unsubscribe = () => {};
   let finalUsage: Usage | undefined;
+  const requestedReasoning = buildResponseReasoning({ payload });
+  let finalReasoning: ResponseReasoning | undefined = requestedReasoning;
   let finalizeRequested: { status: ResponseResource["status"]; text: string } | null = null;
 
   const maybeFinalize = () => {
@@ -755,6 +808,7 @@ export async function handleOpenResponsesHttpRequest(
       status: finalizeRequested.status,
       output: [completedItem],
       usage,
+      reasoning: finalReasoning,
     });
 
     writeSseEvent(res, { type: "response.completed", response: finalResponse });
@@ -776,6 +830,7 @@ export async function handleOpenResponsesHttpRequest(
     model,
     status: "in_progress",
     output: [],
+    reasoning: requestedReasoning,
   });
 
   writeSseEvent(res, { type: "response.created", response: initialResponse });
@@ -853,6 +908,7 @@ export async function handleOpenResponsesHttpRequest(
         {
           message: prompt.message,
           model,
+          thinkingOnce: payload.reasoning?.effort,
           images: images.length > 0 ? images : undefined,
           clientTools: resolvedClientTools.length > 0 ? resolvedClientTools : undefined,
           extraSystemPrompt: extraSystemPrompt || undefined,
@@ -868,6 +924,7 @@ export async function handleOpenResponsesHttpRequest(
       );
 
       finalUsage = extractUsageFromResult(result);
+      finalReasoning = buildResponseReasoning({ payload, result });
       maybeFinalize();
 
       if (closed) {
@@ -948,6 +1005,7 @@ export async function handleOpenResponsesHttpRequest(
             status: "incomplete",
             output: [completedItem, functionCallItem],
             usage,
+            reasoning: finalReasoning,
           });
           closed = true;
           unsubscribe();
@@ -990,6 +1048,7 @@ export async function handleOpenResponsesHttpRequest(
         output: [],
         error: { code: "api_error", message: "internal error" },
         usage: finalUsage,
+        reasoning: requestedReasoning,
       });
 
       writeSseEvent(res, { type: "response.failed", response: errorResponse });

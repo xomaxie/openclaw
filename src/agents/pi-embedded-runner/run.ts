@@ -981,6 +981,7 @@ export async function runEmbeddedPiAgent(
             sessionId: sessionIdUsed,
             provider: lastAssistant?.provider ?? provider,
             model: lastAssistant?.model ?? model.id,
+            thinkingLevel: thinkLevel,
             usage,
             lastCallUsage: lastCallUsage ?? undefined,
             promptTokens,
