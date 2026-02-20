@@ -552,6 +552,59 @@ describe("OpenResponses HTTP API (e2e)", () => {
       expect(deltas).toBe("hello");
 
       agentCommand.mockReset();
+      agentCommand.mockImplementationOnce((async (opts: unknown) => {
+        const runId = (opts as { runId?: string } | undefined)?.runId ?? "";
+        emitAgentEvent({
+          runId,
+          stream: "thinking",
+          data: { delta: "Investigating provider fallback." },
+        });
+        emitAgentEvent({ runId, stream: "assistant", data: { delta: "Done." } });
+        return {
+          payloads: [{ text: "Done." }],
+          meta: {
+            agentMeta: { thinkingLevel: "high" },
+            executedToolCalls: [
+              {
+                id: "mcp_1",
+                name: "firecrawl.firecrawl_search",
+                status: "success",
+                meta: '{"query":"agno"}',
+              },
+            ],
+          },
+        } as never;
+      }) as never);
+
+      const resReasoningAndTools = await postResponses(port, {
+        stream: true,
+        model: "openclaw",
+        input: "hi",
+        reasoning: { effort: "high" },
+      });
+      expect(resReasoningAndTools.status).toBe(200);
+      const optsReasoningAndTools = (agentCommand.mock.calls[0] as unknown[] | undefined)?.[0];
+      expect((optsReasoningAndTools as { thinkingOnce?: string } | undefined)?.thinkingOnce).toBe(
+        "high",
+      );
+      expect(
+        (optsReasoningAndTools as { reasoningLevel?: string } | undefined)?.reasoningLevel,
+      ).toBe("stream");
+
+      const reasoningAndToolsText = await resReasoningAndTools.text();
+      const reasoningAndToolsEvents = parseSseEvents(reasoningAndToolsText);
+      const completedEvent = reasoningAndToolsEvents.find((e) => e.event === "response.completed");
+      expect(completedEvent).toBeTruthy();
+      const completedPayload = JSON.parse(completedEvent?.data ?? "{}") as {
+        response?: { output?: Array<Record<string, unknown>> };
+      };
+      const completedOutput = completedPayload.response?.output ?? [];
+      const reasoningItem = completedOutput.find((entry) => entry.type === "reasoning");
+      const observedToolItem = completedOutput.find((entry) => entry.type === "mcp_call");
+      expect(reasoningItem?.content).toContain("Investigating provider fallback.");
+      expect(observedToolItem?.name).toBe("firecrawl.firecrawl_search");
+
+      agentCommand.mockReset();
       agentCommand.mockResolvedValueOnce({
         payloads: [{ text: "hello" }],
       } as never);

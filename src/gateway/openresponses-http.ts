@@ -6,16 +6,19 @@
  * @see https://www.open-responses.com/
  */
 
-import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ClientToolDefinition } from "../agents/pi-embedded-runner/run/params.js";
-import type { ImageContent } from "../commands/agent/types.js";
-import type { GatewayHttpResponsesConfig } from "../config/types.gateway.js";
-import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import { createDefaultDeps } from "../cli/deps.js";
-import { loadConfig } from "../config/config.js";
-import { resolveAgentMainSessionKey, resolveStorePath, updateLastRoute } from "../config/sessions.js";
 import { agentCommand } from "../commands/agent.js";
+import type { ImageContent } from "../commands/agent/types.js";
+import { loadConfig } from "../config/config.js";
+import {
+  resolveAgentMainSessionKey,
+  resolveStorePath,
+  updateLastRoute,
+} from "../config/sessions.js";
+import type { GatewayHttpResponsesConfig } from "../config/types.gateway.js";
 import { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
 import { logWarn } from "../logger.js";
 import {
@@ -41,6 +44,7 @@ import {
   buildAgentMessageFromConversationEntries,
   type ConversationEntry,
 } from "./agent-prompt.js";
+import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import { authorizeGatewayConnect, type ResolvedGatewayAuth } from "./auth.js";
 import {
   readJsonBodyOrError,
@@ -309,15 +313,17 @@ function buildResponseReasoning(params: {
 }): ResponseReasoning | undefined {
   const requested = normalizeReasoningEffort(params.payload.reasoning?.effort);
   const effectiveThinkingRaw =
-    (
-      (params.result as {
+    ((
+      params.result as {
         meta?: {
           agentMeta?: {
             thinkingLevel?: unknown;
           };
         };
-      } | null)?.meta?.agentMeta?.thinkingLevel ?? undefined
-    ) || undefined;
+      } | null
+    )?.meta?.agentMeta?.thinkingLevel ??
+      undefined) ||
+    undefined;
   const effectiveThinking =
     typeof effectiveThinkingRaw === "string" && effectiveThinkingRaw.trim().length > 0
       ? effectiveThinkingRaw.trim()
@@ -650,6 +656,7 @@ export async function handleOpenResponsesHttpRequest(
     typeof payload.max_output_tokens === "number"
       ? { maxTokens: payload.max_output_tokens }
       : undefined;
+  const reasoningLevel = stream && payload.reasoning ? "stream" : "off";
 
   if (!stream) {
     try {
@@ -658,6 +665,7 @@ export async function handleOpenResponsesHttpRequest(
           message: prompt.message,
           model,
           thinkingOnce: payload.reasoning?.effort,
+          reasoningLevel,
           images: images.length > 0 ? images : undefined,
           clientTools: resolvedClientTools.length > 0 ? resolvedClientTools : undefined,
           extraSystemPrompt: extraSystemPrompt || undefined,
@@ -759,6 +767,9 @@ export async function handleOpenResponsesHttpRequest(
   let finalUsage: Usage | undefined;
   const requestedReasoning = buildResponseReasoning({ payload });
   let finalReasoning: ResponseReasoning | undefined = requestedReasoning;
+  let finalObservedToolItems: OutputItem[] = [];
+  let streamedReasoning = "";
+  const reasoningItemId = `rsn_${randomUUID()}`;
   let finalizeRequested: { status: ResponseResource["status"]; text: string } | null = null;
 
   const maybeFinalize = () => {
@@ -804,11 +815,50 @@ export async function handleOpenResponsesHttpRequest(
       item: completedItem,
     });
 
+    const finalOutputItems: OutputItem[] = [completedItem];
+    let outputIndex = 1;
+
+    const reasoningText = streamedReasoning.trim();
+    if (reasoningText) {
+      const reasoningItem: OutputItem = {
+        type: "reasoning",
+        id: reasoningItemId,
+        content: reasoningText,
+      };
+      writeSseEvent(res, {
+        type: "response.output_item.added",
+        output_index: outputIndex,
+        item: reasoningItem,
+      });
+      writeSseEvent(res, {
+        type: "response.output_item.done",
+        output_index: outputIndex,
+        item: reasoningItem,
+      });
+      finalOutputItems.push(reasoningItem);
+      outputIndex += 1;
+    }
+
+    for (const observedItem of finalObservedToolItems) {
+      writeSseEvent(res, {
+        type: "response.output_item.added",
+        output_index: outputIndex,
+        item: observedItem,
+      });
+      writeSseEvent(res, {
+        type: "response.output_item.done",
+        output_index: outputIndex,
+        item: observedItem,
+      });
+      finalOutputItems.push(observedItem);
+      outputIndex += 1;
+    }
+
     const finalResponse = createResponseResource({
       id: responseId,
       model,
       status: finalizeRequested.status,
-      output: [completedItem],
+      output: finalOutputItems,
       usage,
       reasoning: finalReasoning,
     });
@@ -889,6 +939,26 @@ export async function handleOpenResponsesHttpRequest(
       return;
     }
 
+    if (evt.stream === "thinking") {
+      const delta = evt.data?.delta;
+      const text = evt.data?.text;
+      const content = typeof delta === "string" ? delta : typeof text === "string" ? text : "";
+      if (!content) {
+        return;
+      }
+      if (
+        typeof delta !== "string" &&
+        typeof text === "string" &&
+        streamedReasoning &&
+        text.startsWith(streamedReasoning)
+      ) {
+        streamedReasoning += text.slice(streamedReasoning.length);
+      } else {
+        streamedReasoning += content;
+      }
+      return;
+    }
+
     if (evt.stream === "lifecycle") {
       const phase = evt.data?.phase;
       if (phase === "end" || phase === "error") {
@@ -911,6 +981,7 @@ export async function handleOpenResponsesHttpRequest(
           message: prompt.message,
           model,
           thinkingOnce: payload.reasoning?.effort,
+          reasoningLevel,
           images: images.length > 0 ? images : undefined,
           clientTools: resolvedClientTools.length > 0 ? resolvedClientTools : undefined,
           extraSystemPrompt: extraSystemPrompt || undefined,
@@ -927,6 +998,9 @@ export async function handleOpenResponsesHttpRequest(
 
       finalUsage = extractUsageFromResult(result);
       finalReasoning = buildResponseReasoning({ payload, result });
+      finalObservedToolItems = createObservedToolOutputItems(
+        extractExecutedToolCalls((result as { meta?: unknown } | null)?.meta),
+      );
       maybeFinalize();
 
       if (closed) {
@@ -938,6 +1012,7 @@ export async function handleOpenResponsesHttpRequest(
         const resultAny = result as { payloads?: Array<{ text?: string }>; meta?: unknown };
         const payloads = resultAny.payloads;
         const meta = resultAny.meta;
+        const observedToolItems = createObservedToolOutputItems(extractExecutedToolCalls(meta));
         const stopReason =
           meta && typeof meta === "object"
             ? (meta as { stopReason?: string }).stopReason
@@ -1001,11 +1076,26 @@ export async function handleOpenResponsesHttpRequest(
             item: { ...functionCallItem, status: "completed" as const },
           });
 
+          let toolOutputIndex = 2;
+          for (const observedItem of observedToolItems) {
+            writeSseEvent(res, {
+              type: "response.output_item.added",
+              output_index: toolOutputIndex,
+              item: observedItem,
+            });
+            writeSseEvent(res, {
+              type: "response.output_item.done",
+              output_index: toolOutputIndex,
+              item: observedItem,
+            });
+            toolOutputIndex += 1;
+          }
+
           const incompleteResponse = createResponseResource({
             id: responseId,
             model,
             status: "incomplete",
-            output: [completedItem, functionCallItem],
+            output: [completedItem, functionCallItem, ...observedToolItems],
             usage,
             reasoning: finalReasoning,
           });
