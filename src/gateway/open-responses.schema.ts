@@ -190,7 +190,7 @@ export const CreateResponseBodySchema = z
     previous_response_id: z.string().optional(),
     reasoning: z
       .object({
-        effort: z.enum(["low", "medium", "high"]).optional(),
+        effort: z.enum(["low", "medium", "high", "xhigh"]).optional(),
         summary: z.enum(["auto", "concise", "detailed"]).optional(),
       })
       .optional(),
@@ -266,8 +266,8 @@ export type Usage = z.infer<typeof UsageSchema>;
 
 export const ResponseReasoningSchema = z
   .object({
-    requested_effort: z.enum(["low", "medium", "high"]).optional(),
-    effective_effort: z.enum(["low", "medium", "high"]).optional(),
+    requested_effort: z.enum(["low", "medium", "high", "xhigh"]).optional(),
+    effective_effort: z.enum(["low", "medium", "high", "xhigh"]).optional(),
     effective_thinking: z.string().optional(),
   })
   .strict();

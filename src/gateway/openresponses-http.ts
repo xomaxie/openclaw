@@ -288,15 +288,17 @@ function extractUsageFromResult(result: unknown): Usage {
   );
 }
 
-function normalizeReasoningEffort(value: unknown): "low" | "medium" | "high" | undefined {
+function normalizeReasoningEffort(value: unknown): "low" | "medium" | "high" | "xhigh" | undefined {
   const normalized = String(value ?? "")
     .trim()
     .toLowerCase();
-  if (normalized === "low" || normalized === "medium" || normalized === "high") {
+  if (
+    normalized === "low" ||
+    normalized === "medium" ||
+    normalized === "high" ||
+    normalized === "xhigh"
+  ) {
     return normalized;
-  }
-  if (normalized === "xhigh") {
-    return "high";
   }
   return undefined;
 }

@@ -398,6 +398,29 @@ describe("OpenResponses HTTP API (e2e)", () => {
 
       mockAgentOnce([{ text: "ok" }], {
         agentMeta: {
+          thinkingLevel: "xhigh",
+        },
+      });
+      const resReasoningXhigh = await postResponses(port, {
+        model: "openclaw",
+        input: "hi",
+        reasoning: { effort: "xhigh" },
+      });
+      expect(resReasoningXhigh.status).toBe(200);
+      const optsReasoningXhigh = (agentCommand.mock.calls[0] as unknown[] | undefined)?.[0];
+      expect((optsReasoningXhigh as { thinkingOnce?: string } | undefined)?.thinkingOnce).toBe(
+        "xhigh",
+      );
+      const reasoningXhighJson = (await resReasoningXhigh.json()) as Record<string, unknown>;
+      expect(reasoningXhighJson.reasoning).toEqual({
+        requested_effort: "xhigh",
+        effective_effort: "xhigh",
+        effective_thinking: "xhigh",
+      });
+      await ensureResponseConsumed(resReasoningXhigh);
+
+      mockAgentOnce([{ text: "ok" }], {
+        agentMeta: {
           usage: { input: 3, output: 5, cacheRead: 1, cacheWrite: 1 },
         },
       });
