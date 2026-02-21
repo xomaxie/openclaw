@@ -83,18 +83,11 @@ async function persistSessionEntry(params: PersistSessionEntryParams): Promise<v
 function resolveFallbackRetryPrompt(params: {
   body: string;
   isFallbackRetry: boolean;
-  providerOverride: string;
-  cfg: ReturnType<typeof loadConfig>;
 }): string {
-  if (!params.isFallbackRetry) {
-    return params.body;
-  }
-  // Preserve the original user message for embedded/gateway retries so
-  // model fallback does not hijack intent with synthetic recovery text.
-  if (!isCliProvider(params.providerOverride, params.cfg)) {
-    return params.body;
-  }
-  return "Continue where you left off. The previous model attempt failed or timed out.";
+  // Always preserve the original operator prompt across fallback retries.
+  // Synthetic "continue where you left off" text causes stale-context
+  // responses when the first provider/model attempt fails.
+  return params.body;
 }
 
 function runAgentAttempt(params: {
@@ -126,8 +119,6 @@ function runAgentAttempt(params: {
   const effectivePrompt = resolveFallbackRetryPrompt({
     body: params.body,
     isFallbackRetry: params.isFallbackRetry,
-    providerOverride: params.providerOverride,
-    cfg: params.cfg,
   });
   if (isCliProvider(params.providerOverride, params.cfg)) {
     const cliSessionId = getCliSessionId(params.sessionEntry, params.providerOverride);

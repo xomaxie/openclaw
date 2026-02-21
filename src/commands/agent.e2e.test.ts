@@ -8,12 +8,16 @@ vi.mock("../agents/pi-embedded.js", () => ({
   runEmbeddedPiAgent: vi.fn(),
   resolveEmbeddedSessionLane: (key: string) => `session:${key.trim() || "main"}`,
 }));
+vi.mock("../agents/cli-runner.js", () => ({
+  runCliAgent: vi.fn(),
+}));
 vi.mock("../agents/model-catalog.js", () => ({
   loadModelCatalog: vi.fn(),
 }));
 
 import { telegramPlugin } from "../../extensions/telegram/src/channel.js";
 import { setTelegramRuntime } from "../../extensions/telegram/src/runtime.js";
+import { runCliAgent } from "../agents/cli-runner.js";
 import { loadModelCatalog } from "../agents/model-catalog.js";
 import { runEmbeddedPiAgent } from "../agents/pi-embedded.js";
 import type { OpenClawConfig } from "../config/config.js";
@@ -73,6 +77,13 @@ function writeSessionStoreSeed(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(runCliAgent).mockResolvedValue({
+    payloads: [{ text: "ok" }],
+    meta: {
+      durationMs: 5,
+      agentMeta: { sessionId: "s", provider: "p", model: "m" },
+    },
+  } as never);
   vi.mocked(runEmbeddedPiAgent).mockResolvedValue({
     payloads: [{ text: "ok" }],
     meta: {
@@ -287,6 +298,43 @@ describe("agentCommand", () => {
 
       const prompts = vi
         .mocked(runEmbeddedPiAgent)
+        .mock.calls.map((call) => call[0]?.prompt);
+      expect(prompts).toEqual(["What is 2+2?", "What is 2+2?"]);
+    });
+  });
+
+  it("preserves original prompt text across cli fallback retries", async () => {
+    await withTempHome(async (home) => {
+      const store = path.join(home, "sessions.json");
+      mockConfig(home, store, {
+        model: {
+          primary: "codex-cli/gpt-5.3-codex",
+          fallbacks: ["claude-cli/claude-sonnet-4-6"],
+        },
+        models: {
+          "codex-cli/gpt-5.3-codex": {},
+          "claude-cli/claude-sonnet-4-6": {},
+        },
+      });
+
+      vi.mocked(loadModelCatalog).mockResolvedValueOnce([
+        { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", provider: "codex-cli" },
+        { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", provider: "claude-cli" },
+      ]);
+      vi.mocked(runCliAgent)
+        .mockRejectedValueOnce(Object.assign(new Error("rate limited"), { status: 429 }))
+        .mockResolvedValueOnce({
+          payloads: [{ text: "ok" }],
+          meta: {
+            durationMs: 5,
+            agentMeta: { sessionId: "s", provider: "claude-cli", model: "claude-sonnet-4-6" },
+          },
+        } as never);
+
+      await agentCommand({ message: "What is 2+2?", to: "+1555" }, runtime);
+
+      const prompts = vi
+        .mocked(runCliAgent)
         .mock.calls.map((call) => call[0]?.prompt);
       expect(prompts).toEqual(["What is 2+2?", "What is 2+2?"]);
     });
