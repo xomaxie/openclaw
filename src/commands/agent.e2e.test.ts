@@ -255,6 +255,43 @@ describe("agentCommand", () => {
     });
   });
 
+  it("preserves original prompt text across embedded fallback retries", async () => {
+    await withTempHome(async (home) => {
+      const store = path.join(home, "sessions.json");
+      mockConfig(home, store, {
+        model: {
+          primary: "openai/gpt-5.3-codex",
+          fallbacks: ["kimi/kimi-for-coding"],
+        },
+        models: {
+          "openai/gpt-5.3-codex": {},
+          "kimi/kimi-for-coding": {},
+        },
+      });
+
+      vi.mocked(loadModelCatalog).mockResolvedValueOnce([
+        { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", provider: "openai" },
+        { id: "kimi-for-coding", name: "Kimi for Coding", provider: "kimi" },
+      ]);
+      vi.mocked(runEmbeddedPiAgent)
+        .mockRejectedValueOnce(Object.assign(new Error("rate limited"), { status: 429 }))
+        .mockResolvedValueOnce({
+          payloads: [{ text: "ok" }],
+          meta: {
+            durationMs: 5,
+            agentMeta: { sessionId: "s", provider: "kimi", model: "kimi-for-coding" },
+          },
+        });
+
+      await agentCommand({ message: "What is 2+2?", to: "+1555" }, runtime);
+
+      const prompts = vi
+        .mocked(runEmbeddedPiAgent)
+        .mock.calls.map((call) => call[0]?.prompt);
+      expect(prompts).toEqual(["What is 2+2?", "What is 2+2?"]);
+    });
+  });
+
   it("keeps explicit sessionKey even when sessionId exists elsewhere", async () => {
     await withTempHome(async (home) => {
       const store = path.join(home, "sessions.json");
