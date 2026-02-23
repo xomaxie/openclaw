@@ -2,7 +2,7 @@ import {
   listAgentIds,
   resolveAgentDir,
   resolveEffectiveModelFallbacks,
-  resolveAgentModelPrimary,
+  resolveSessionAgentId,
   resolveAgentSkillsFilter,
   resolveAgentWorkspaceDir,
 } from "../agents/agent-scope.js";
@@ -20,7 +20,7 @@ import {
   modelKey,
   normalizeModelRef,
   resolveConfiguredModelRef,
-  resolveModelRefFromString,
+  resolveDefaultModelForAgent,
   resolveThinkingDefault,
 } from "../agents/model-selection.js";
 import { runEmbeddedPiAgent } from "../agents/pi-embedded.js";
@@ -31,11 +31,9 @@ import { ensureAgentWorkspace } from "../agents/workspace.js";
 import {
   formatThinkingLevels,
   formatXHighModelHint,
-  normalizeReasoningLevel,
   normalizeThinkLevel,
   normalizeVerboseLevel,
   supportsXHighThinking,
-  type ReasoningLevel,
   type ThinkLevel,
   type VerboseLevel,
 } from "../auto-reply/thinking.js";
@@ -43,8 +41,12 @@ import { formatCliCommand } from "../cli/command-format.js";
 import { type CliDeps, createDefaultDeps } from "../cli/deps.js";
 import { loadConfig } from "../config/config.js";
 import {
+  parseSessionThreadInfo,
+  resolveAndPersistSessionFile,
   resolveAgentIdFromSessionKey,
   resolveSessionFilePath,
+  resolveSessionFilePathOptions,
+  resolveSessionTranscriptPath,
   type SessionEntry,
   updateSessionStore,
 } from "../config/sessions.js";
@@ -80,14 +82,11 @@ async function persistSessionEntry(params: PersistSessionEntryParams): Promise<v
   });
 }
 
-function resolveFallbackRetryPrompt(params: {
-  body: string;
-  isFallbackRetry: boolean;
-}): string {
-  // Always preserve the original operator prompt across fallback retries.
-  // Synthetic "continue where you left off" text causes stale-context
-  // responses when the first provider/model attempt fails.
-  return params.body;
+function resolveFallbackRetryPrompt(params: { body: string; isFallbackRetry: boolean }): string {
+  if (!params.isFallbackRetry) {
+    return params.body;
+  }
+  return "Continue where you left off. The previous model attempt failed or timed out.";
 }
 
 function runAgentAttempt(params: {
@@ -111,7 +110,6 @@ function runAgentAttempt(params: {
   messageChannel: ReturnType<typeof resolveMessageChannel>;
   skillsSnapshot: ReturnType<typeof buildWorkspaceSkillSnapshot> | undefined;
   resolvedVerboseLevel: VerboseLevel | undefined;
-  resolvedReasoningLevel: ReasoningLevel;
   agentDir: string;
   onAgentEvent: (evt: { stream: string; data?: Record<string, unknown> }) => void;
   primaryProvider: string;
@@ -176,7 +174,6 @@ function runAgentAttempt(params: {
     authProfileIdSource: authProfileId ? params.sessionEntry?.authProfileOverrideSource : undefined,
     thinkLevel: params.resolvedThinkLevel,
     verboseLevel: params.resolvedVerboseLevel,
-    reasoningLevel: params.resolvedReasoningLevel,
     timeoutMs: params.timeoutMs,
     runId: params.runId,
     lane: params.opts.lane,
@@ -185,7 +182,6 @@ function runAgentAttempt(params: {
     inputProvenance: params.opts.inputProvenance,
     streamParams: params.opts.streamParams,
     agentDir: params.agentDir,
-    onReasoningStream: params.resolvedReasoningLevel === "stream" ? () => undefined : undefined,
     onAgentEvent: params.onAgentEvent,
   });
 }
@@ -223,14 +219,6 @@ export async function agentCommand(
     }
   }
   const agentCfg = cfg.agents?.defaults;
-  const sessionAgentId = agentIdOverride ?? resolveAgentIdFromSessionKey(opts.sessionKey?.trim());
-  const workspaceDirRaw = resolveAgentWorkspaceDir(cfg, sessionAgentId);
-  const agentDir = resolveAgentDir(cfg, sessionAgentId);
-  const workspace = await ensureAgentWorkspace({
-    dir: workspaceDirRaw,
-    ensureBootstrapFiles: !agentCfg?.skipBootstrap,
-  });
-  const workspaceDir = workspace.dir;
   const configuredModel = resolveConfiguredModelRef({
     cfg,
     defaultProvider: DEFAULT_PROVIDER,
@@ -250,10 +238,6 @@ export async function agentCommand(
   const verboseOverride = normalizeVerboseLevel(opts.verbose);
   if (opts.verbose && !verboseOverride) {
     throw new Error('Invalid verbose level. Use "on", "full", or "off".');
-  }
-  const reasoningOverride = normalizeReasoningLevel(opts.reasoningLevel);
-  if (opts.reasoningLevel && !reasoningOverride) {
-    throw new Error('Invalid reasoning level. Use "off", "on", or "stream".');
   }
 
   const laneRaw = typeof opts.lane === "string" ? opts.lane.trim() : "";
@@ -293,6 +277,19 @@ export async function agentCommand(
     persistedThinking,
     persistedVerbose,
   } = sessionResolution;
+  const sessionAgentId =
+    agentIdOverride ??
+    resolveSessionAgentId({
+      sessionKey: sessionKey ?? opts.sessionKey?.trim(),
+      config: cfg,
+    });
+  const workspaceDirRaw = resolveAgentWorkspaceDir(cfg, sessionAgentId);
+  const agentDir = resolveAgentDir(cfg, sessionAgentId);
+  const workspace = await ensureAgentWorkspace({
+    dir: workspaceDirRaw,
+    ensureBootstrapFiles: !agentCfg?.skipBootstrap,
+  });
+  const workspaceDir = workspace.dir;
   let sessionEntry = resolvedSessionEntry;
   const runId = opts.runId?.trim() || sessionId;
 
@@ -317,7 +314,6 @@ export async function agentCommand(
       (agentCfg?.thinkingDefault as ThinkLevel | undefined);
     const resolvedVerboseLevel =
       verboseOverride ?? persistedVerbose ?? (agentCfg?.verboseDefault as VerboseLevel | undefined);
-    const resolvedReasoningLevel = reasoningOverride ?? "off";
 
     if (sessionKey) {
       registerAgentRunContext(runId, {
@@ -373,31 +369,12 @@ export async function agentCommand(
         storePath,
         entry: next,
       });
+      sessionEntry = next;
     }
 
-    const agentModelPrimary = resolveAgentModelPrimary(cfg, sessionAgentId);
-    const cfgForModelSelection = agentModelPrimary
-      ? {
-          ...cfg,
-          agents: {
-            ...cfg.agents,
-            defaults: {
-              ...cfg.agents?.defaults,
-              model: {
-                ...(typeof cfg.agents?.defaults?.model === "object"
-                  ? cfg.agents.defaults.model
-                  : undefined),
-                primary: agentModelPrimary,
-              },
-            },
-          },
-        }
-      : cfg;
-
-    const configuredDefaultRef = resolveConfiguredModelRef({
-      cfg: cfgForModelSelection,
-      defaultProvider: DEFAULT_PROVIDER,
-      defaultModel: DEFAULT_MODEL,
+    const configuredDefaultRef = resolveDefaultModelForAgent({
+      cfg,
+      agentId: sessionAgentId,
     });
     const { provider: defaultProvider, model: defaultModel } = normalizeModelRef(
       configuredDefaultRef.provider,
@@ -469,30 +446,6 @@ export async function agentCommand(
         model = normalizedStored.model;
       }
     }
-
-    const explicitModelRaw = opts.model?.trim();
-    if (explicitModelRaw) {
-      const explicit = resolveModelRefFromString({
-        raw: explicitModelRaw,
-        defaultProvider,
-      });
-      if (!explicit) {
-        throw new Error(`Invalid model override "${explicitModelRaw}"`);
-      }
-      const candidateProvider = explicit.ref.provider;
-      const candidateModel = explicit.ref.model;
-      const key = modelKey(candidateProvider, candidateModel);
-      if (
-        !isCliProvider(candidateProvider, cfg) &&
-        allowedModelKeys.size > 0 &&
-        !allowedModelKeys.has(key)
-      ) {
-        throw new Error(`Model "${candidateProvider}/${candidateModel}" is not allowed.`);
-      }
-      provider = candidateProvider;
-      model = candidateModel;
-    }
-
     if (sessionEntry) {
       const authProfileId = sessionEntry.authProfileOverride;
       if (authProfileId) {
@@ -543,9 +496,33 @@ export async function agentCommand(
         });
       }
     }
-    const sessionFile = resolveSessionFilePath(sessionId, sessionEntry, {
+    const sessionPathOpts = resolveSessionFilePathOptions({
       agentId: sessionAgentId,
+      storePath,
     });
+    let sessionFile = resolveSessionFilePath(sessionId, sessionEntry, sessionPathOpts);
+    if (sessionStore && sessionKey) {
+      const threadIdFromSessionKey = parseSessionThreadInfo(sessionKey).threadId;
+      const fallbackSessionFile = !sessionEntry?.sessionFile
+        ? resolveSessionTranscriptPath(
+            sessionId,
+            sessionAgentId,
+            opts.threadId ?? threadIdFromSessionKey,
+          )
+        : undefined;
+      const resolvedSessionFile = await resolveAndPersistSessionFile({
+        sessionId,
+        sessionKey,
+        sessionStore,
+        storePath,
+        sessionEntry,
+        agentId: sessionPathOpts?.agentId,
+        sessionsDir: sessionPathOpts?.sessionsDir,
+        fallbackSessionFile,
+      });
+      sessionFile = resolvedSessionFile.sessionFile;
+      sessionEntry = resolvedSessionFile.sessionEntry;
+    }
 
     const startedAt = Date.now();
     let lifecycleEnded = false;
@@ -601,7 +578,6 @@ export async function agentCommand(
             messageChannel,
             skillsSnapshot,
             resolvedVerboseLevel,
-            resolvedReasoningLevel,
             agentDir,
             primaryProvider: provider,
             onAgentEvent: (evt) => {
