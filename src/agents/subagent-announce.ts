@@ -7,6 +7,7 @@ import {
   resolveAgentIdFromSessionKey,
   resolveMainSessionKey,
   resolveStorePath,
+  type SessionEntry,
 } from "../config/sessions.js";
 import { callGateway } from "../gateway/call.js";
 import { createBoundDeliveryRouter } from "../infra/outbound/bound-delivery-router.js";
@@ -534,9 +535,9 @@ function resolveRequesterStoreKey(
 }
 
 function readSessionStoreEntryByKey(
-  store: Record<string, unknown>,
+  store: Record<string, SessionEntry>,
   sessionKey: string,
-) {
+): SessionEntry | undefined {
   const key = sessionKey.trim();
   if (!key) {
     return undefined;
