@@ -36,6 +36,17 @@ export type DeliveryTargetResolution =
       error: Error;
     };
 
+function readSessionEntryByKey(
+  store: Record<string, unknown>,
+  sessionKey: string | undefined,
+) {
+  const key = sessionKey?.trim();
+  if (!key) {
+    return undefined;
+  }
+  return store[key] ?? store[key.toLowerCase()];
+}
+
 export async function resolveDeliveryTarget(
   cfg: OpenClawConfig,
   agentId: string,
@@ -57,8 +68,8 @@ export async function resolveDeliveryTarget(
   // Look up thread-specific session first (e.g. agent:main:main:thread:1234),
   // then fall back to the main session entry.
   const threadSessionKey = jobPayload.sessionKey?.trim();
-  const threadEntry = threadSessionKey ? store[threadSessionKey] : undefined;
-  const main = threadEntry ?? store[mainSessionKey];
+  const threadEntry = readSessionEntryByKey(store, threadSessionKey);
+  const main = threadEntry ?? readSessionEntryByKey(store, mainSessionKey);
 
   const preliminary = resolveSessionDeliveryTarget({
     entry: main,

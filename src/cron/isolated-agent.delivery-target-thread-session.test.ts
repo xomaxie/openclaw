@@ -79,6 +79,31 @@ describe("resolveDeliveryTarget thread session lookup", () => {
     expect(result.channel).toBe("telegram");
   });
 
+  it("matches mixed-case sessionKey inputs against canonical lowercase store keys", async () => {
+    mockStore["/mock/store.json"] = {
+      "agent:main:main": {
+        sessionId: "s-main",
+        updatedAt: 1,
+        lastChannel: "telegram",
+        lastTo: "-100-main",
+      },
+      "agent:main:chat_v27ql1cqij2y": {
+        sessionId: "s-chat",
+        updatedAt: 2,
+        lastChannel: "telegram",
+        lastTo: "-100-thread",
+      },
+    };
+
+    const result = await resolveDeliveryTarget(cfg, "main", {
+      channel: "last",
+      sessionKey: "agent:main:chat_V27qL1CQIJ2Y",
+    });
+
+    expect(result.to).toBe("-100-thread");
+    expect(result.channel).toBe("telegram");
+  });
+
   it("falls back to main session when no sessionKey is provided", async () => {
     mockStore["/mock/store.json"] = {
       "agent:main:main": {

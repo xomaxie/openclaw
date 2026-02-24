@@ -230,6 +230,21 @@ describe("subagent announce formatting", () => {
     expect(msg).toContain("Keep this internal context private");
   });
 
+  it("normalizes mixed-case requester session keys before direct announce injection", async () => {
+    await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-mixed-case-requester",
+      requesterSessionKey: "agent:main:chat_V27qL1CQIJ2Y",
+      requesterDisplayKey: "chat_V27qL1CQIJ2Y",
+      ...defaultOutcomeAnnounce,
+    });
+
+    const call = agentSpy.mock.calls[0]?.[0] as {
+      params?: { sessionKey?: string };
+    };
+    expect(call?.params?.sessionKey).toBe("agent:main:chat_v27ql1cqij2y");
+  });
+
   it("includes success status when outcome is ok", async () => {
     // Use waitForCompletion: false so it uses the provided outcome instead of calling agent.wait
     await runSubagentAnnounceFlow({

@@ -515,21 +515,33 @@ function resolveRequesterStoreKey(
   requesterSessionKey: string,
 ): string {
   const raw = (requesterSessionKey ?? "").trim();
+  const lowered = raw.toLowerCase();
   if (!raw) {
     return raw;
   }
-  if (raw === "global" || raw === "unknown") {
-    return raw;
+  if (lowered === "global" || lowered === "unknown") {
+    return lowered;
   }
-  if (raw.startsWith("agent:")) {
-    return raw;
+  if (lowered.startsWith("agent:")) {
+    return lowered;
   }
   const mainKey = normalizeMainKey(cfg.session?.mainKey);
-  if (raw === "main" || raw === mainKey) {
+  if (lowered === "main" || lowered === mainKey) {
     return resolveMainSessionKey(cfg);
   }
-  const agentId = resolveAgentIdFromSessionKey(raw);
-  return `agent:${agentId}:${raw}`;
+  const agentId = resolveAgentIdFromSessionKey(lowered);
+  return `agent:${agentId}:${lowered}`;
+}
+
+function readSessionStoreEntryByKey(
+  store: Record<string, unknown>,
+  sessionKey: string,
+) {
+  const key = sessionKey.trim();
+  if (!key) {
+    return undefined;
+  }
+  return store[key] ?? store[key.toLowerCase()];
 }
 
 function loadRequesterSessionEntry(requesterSessionKey: string) {
@@ -538,7 +550,7 @@ function loadRequesterSessionEntry(requesterSessionKey: string) {
   const agentId = resolveAgentIdFromSessionKey(canonicalKey);
   const storePath = resolveStorePath(cfg.session?.store, { agentId });
   const store = loadSessionStore(storePath);
-  const entry = store[canonicalKey];
+  const entry = readSessionStoreEntryByKey(store, canonicalKey);
   return { cfg, entry, canonicalKey };
 }
 
@@ -851,10 +863,11 @@ async function deliverSubagentAnnouncement(params: {
 
 function loadSessionEntryByKey(sessionKey: string) {
   const cfg = loadConfig();
-  const agentId = resolveAgentIdFromSessionKey(sessionKey);
+  const canonicalKey = resolveRequesterStoreKey(cfg, sessionKey);
+  const agentId = resolveAgentIdFromSessionKey(canonicalKey);
   const storePath = resolveStorePath(cfg.session?.store, { agentId });
   const store = loadSessionStore(storePath);
-  return store[sessionKey];
+  return readSessionStoreEntryByKey(store, canonicalKey);
 }
 
 export function buildSubagentSystemPrompt(params: {
