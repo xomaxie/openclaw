@@ -310,7 +310,76 @@ describe("agentCommand", () => {
     });
   });
 
-  it("uses default fallback list for session model overrides", async () => {
+  it("applies one-shot opts.model override to provider/model", async () => {
+    await withTempHome(async (home) => {
+      const store = path.join(home, "sessions.json");
+      mockConfig(home, store, {
+        model: { primary: "anthropic/claude-opus-4-5" },
+        models: {
+          "anthropic/claude-opus-4-5": {},
+          "openrouter/google/gemini-3.1-pro-preview": {},
+        },
+      });
+
+      vi.mocked(loadModelCatalog).mockResolvedValueOnce([
+        { id: "claude-opus-4-5", name: "Opus", provider: "anthropic" },
+        {
+          id: "google/gemini-3.1-pro-preview",
+          name: "Gemini 3.1 Pro Preview",
+          provider: "openrouter",
+        },
+      ]);
+
+      await agentCommand(
+        {
+          message: "hi",
+          to: "+1555",
+          model: "openrouter/google/gemini-3.1-pro-preview",
+        },
+        runtime,
+      );
+
+      const callArgs = vi.mocked(runEmbeddedPiAgent).mock.calls.at(-1)?.[0];
+      expect(callArgs?.provider).toBe("openrouter");
+      expect(callArgs?.model).toBe("google/gemini-3.1-pro-preview");
+    });
+  });
+
+  it("rejects one-shot model overrides that are not allowlisted", async () => {
+    await withTempHome(async (home) => {
+      const store = path.join(home, "sessions.json");
+      mockConfig(home, store, {
+        model: { primary: "anthropic/claude-opus-4-5" },
+        models: {
+          "anthropic/claude-opus-4-5": {},
+          "openrouter/google/gemini-3.1-pro-preview": {},
+        },
+      });
+
+      vi.mocked(loadModelCatalog).mockResolvedValueOnce([
+        { id: "claude-opus-4-5", name: "Opus", provider: "anthropic" },
+        {
+          id: "google/gemini-3.1-pro-preview",
+          name: "Gemini 3.1 Pro Preview",
+          provider: "openrouter",
+        },
+      ]);
+
+      await expect(
+        agentCommand(
+          {
+            message: "hi",
+            to: "+1555",
+            model: "openrouter/not-a-real-model",
+          },
+          runtime,
+        ),
+      ).rejects.toThrow(/not allowlisted/i);
+      expect(vi.mocked(runEmbeddedPiAgent)).not.toHaveBeenCalled();
+    });
+  });
+
+  it("fails fast for session model override errors without model fallback", async () => {
     await withTempHome(async (home) => {
       const store = path.join(home, "sessions.json");
       writeSessionStoreSeed(store, {
@@ -349,21 +418,20 @@ describe("agentCommand", () => {
           },
         });
 
-      await agentCommand(
-        {
-          message: "hi",
-          sessionKey: "agent:main:subagent:test",
-        },
-        runtime,
-      );
+      await expect(
+        agentCommand(
+          {
+            message: "hi",
+            sessionKey: "agent:main:subagent:test",
+          },
+          runtime,
+        ),
+      ).rejects.toThrow(/rate limited/i);
 
       const attempts = vi
         .mocked(runEmbeddedPiAgent)
         .mock.calls.map((call) => ({ provider: call[0]?.provider, model: call[0]?.model }));
-      expect(attempts).toEqual([
-        { provider: "anthropic", model: "claude-opus-4-5" },
-        { provider: "openai", model: "gpt-5.2" },
-      ]);
+      expect(attempts).toEqual([{ provider: "anthropic", model: "claude-opus-4-5" }]);
     });
   });
 

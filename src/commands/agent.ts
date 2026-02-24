@@ -1,7 +1,6 @@
 import {
   listAgentIds,
   resolveAgentDir,
-  resolveEffectiveModelFallbacks,
   resolveSessionAgentId,
   resolveAgentSkillsFilter,
   resolveAgentWorkspaceDir,
@@ -16,11 +15,13 @@ import { loadModelCatalog } from "../agents/model-catalog.js";
 import { runWithModelFallback } from "../agents/model-fallback.js";
 import {
   buildAllowedModelSet,
+  buildModelAliasIndex,
   isCliProvider,
   modelKey,
   normalizeModelRef,
   resolveConfiguredModelRef,
   resolveDefaultModelForAgent,
+  resolveModelRefFromString,
   resolveThinkingDefault,
 } from "../agents/model-selection.js";
 import { runEmbeddedPiAgent } from "../agents/pi-embedded.js";
@@ -386,7 +387,8 @@ export async function agentCommand(
     const hasStoredOverride = Boolean(
       sessionEntry?.modelOverride || sessionEntry?.providerOverride,
     );
-    const needsModelCatalog = hasAllowlist || hasStoredOverride;
+    const requestedModelSelection = opts.model?.trim();
+    const needsModelCatalog = hasAllowlist || hasStoredOverride || Boolean(requestedModelSelection);
     let allowedModelKeys = new Set<string>();
     let allowedModelCatalog: Awaited<ReturnType<typeof loadModelCatalog>> = [];
     let modelCatalog: Awaited<ReturnType<typeof loadModelCatalog>> | null = null;
@@ -446,6 +448,34 @@ export async function agentCommand(
         model = normalizedStored.model;
       }
     }
+
+    if (requestedModelSelection) {
+      const aliasIndex = buildModelAliasIndex({ cfg, defaultProvider });
+      const resolvedRequested = resolveModelRefFromString({
+        raw: requestedModelSelection,
+        defaultProvider,
+        aliasIndex,
+      });
+      if (!resolvedRequested) {
+        throw new Error(
+          `Invalid model override "${requestedModelSelection}". Use provider/model or a configured alias.`,
+        );
+      }
+      const requestedRef = resolvedRequested.ref;
+      const requestedKey = modelKey(requestedRef.provider, requestedRef.model);
+      if (
+        !isCliProvider(requestedRef.provider, cfg) &&
+        allowedModelKeys.size > 0 &&
+        !allowedModelKeys.has(requestedKey)
+      ) {
+        throw new Error(
+          `Model override "${requestedModelSelection}" is not allowlisted for this agent.`,
+        );
+      }
+      provider = requestedRef.provider;
+      model = requestedRef.model;
+    }
+
     if (sessionEntry) {
       const authProfileId = sessionEntry.authProfileOverride;
       if (authProfileId) {
@@ -537,23 +567,14 @@ export async function agentCommand(
         opts.replyChannel ?? opts.channel,
       );
       const spawnedBy = opts.spawnedBy ?? sessionEntry?.spawnedBy;
-      // Keep fallback candidate resolution centralized so session model overrides,
-      // per-agent overrides, and default fallbacks stay consistent across callers.
-      const effectiveFallbacksOverride = resolveEffectiveModelFallbacks({
-        cfg,
-        agentId: sessionAgentId,
-        hasSessionModelOverride: Boolean(storedModelOverride),
-      });
-
-      // Track model fallback attempts so retries on an existing session don't
-      // re-inject the original prompt as a duplicate user message.
+      // Fail fast: disable model-chain fallback and run only the selected model.
       let fallbackAttemptIndex = 0;
       const fallbackResult = await runWithModelFallback({
         cfg,
         provider,
         model,
         agentDir,
-        fallbacksOverride: effectiveFallbacksOverride,
+        fallbacksOverride: [],
         run: (providerOverride, modelOverride) => {
           const isFallbackRetry = fallbackAttemptIndex > 0;
           fallbackAttemptIndex += 1;
