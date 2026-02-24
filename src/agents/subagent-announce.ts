@@ -552,14 +552,23 @@ function hasSessionRoute(entry?: DeliveryContextSource): boolean {
   return Boolean(channel && to);
 }
 
-function loadRequesterSessionEntry(requesterSessionKey: string) {
+function loadRequesterSessionEntry(
+  requesterSessionKey: string,
+  requesterOrigin?: DeliveryContext,
+) {
   const cfg = loadConfig();
   const canonicalKey = resolveRequesterStoreKey(cfg, requesterSessionKey);
   const agentId = resolveAgentIdFromSessionKey(canonicalKey);
   const storePath = resolveStorePath(cfg.session?.store, { agentId });
   const store = loadSessionStore(storePath);
   const entry = readSessionStoreEntryByKey(store, canonicalKey);
+  const normalizedRequesterOrigin = normalizeDeliveryContext(requesterOrigin);
   const rawRequester = requesterSessionKey.trim().toLowerCase();
+  const requesterChannel = normalizedRequesterOrigin?.channel?.trim().toLowerCase();
+  const isChatAliasRequester = rawRequester.startsWith("chat_");
+  const hasDeliverableRequesterChannel = Boolean(
+    requesterChannel && isDeliverableMessageChannel(requesterChannel),
+  );
   const shouldFallbackToMainRoute =
     rawRequester.length > 0 &&
     !rawRequester.startsWith("agent:") &&
@@ -571,7 +580,9 @@ function loadRequesterSessionEntry(requesterSessionKey: string) {
     const mainEntry = readSessionStoreEntryByKey(store, mainKey);
     const mainRoute = deliveryContextFromSession(mainEntry);
     const mainTo = mainRoute?.to?.trim().toLowerCase();
-    if (mainTo && mainTo === rawRequester && hasSessionRoute(mainEntry)) {
+    const canFallbackToMainRouteByThread =
+      isChatAliasRequester && !hasDeliverableRequesterChannel && hasSessionRoute(mainEntry);
+    if ((mainTo && mainTo === rawRequester && hasSessionRoute(mainEntry)) || canFallbackToMainRouteByThread) {
       return { cfg, entry: mainEntry, canonicalKey };
     }
   }
@@ -597,7 +608,10 @@ async function maybeQueueSubagentAnnounce(params: {
   if (params.signal?.aborted) {
     return "none";
   }
-  const { cfg, entry } = loadRequesterSessionEntry(params.requesterSessionKey);
+  const { cfg, entry } = loadRequesterSessionEntry(
+    params.requesterSessionKey,
+    params.requesterOrigin,
+  );
   const canonicalKey = resolveRequesterStoreKey(cfg, params.requesterSessionKey);
   const sessionId = entry?.sessionId;
   if (!sessionId) {
@@ -1252,7 +1266,10 @@ export async function runSubagentAnnounceFlow(params: {
     // follow-up injection (deliver=false) so the orchestrator receives it.
     let directOrigin = targetRequesterOrigin;
     if (!requesterIsSubagent) {
-      const { entry } = loadRequesterSessionEntry(targetRequesterSessionKey);
+      const { entry } = loadRequesterSessionEntry(
+        targetRequesterSessionKey,
+        targetRequesterOrigin,
+      );
       directOrigin = resolveAnnounceOrigin(entry, targetRequesterOrigin);
     }
     const completionResolution =

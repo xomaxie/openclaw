@@ -278,6 +278,39 @@ describe("subagent announce formatting", () => {
     expect(call?.params?.to).toBe("chat_V27qL1CQIJ2Y");
   });
 
+  it("falls back to main thread route for webchat chat aliases without persisted to/thread metadata", async () => {
+    sessionStore = {
+      chat_V27qL1CQIJ2Y: {
+        sessionId: "chat-session-mixed",
+      },
+      "agent:main:chat_v27ql1cqij2y": {
+        sessionId: "chat-session-canonical",
+      },
+      "agent:main:main": {
+        sessionId: "main-session",
+        lastChannel: "genesis",
+        lastTo: "sxa999umgpg88pfriamgoao9ma",
+      },
+    };
+
+    await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-chat-alias-webchat-fallback",
+      requesterSessionKey: "chat_V27qL1CQIJ2Y",
+      requesterDisplayKey: "chat_V27qL1CQIJ2Y",
+      requesterOrigin: { channel: "webchat" },
+      expectsCompletionMessage: true,
+      ...defaultOutcomeAnnounce,
+    });
+
+    const call = agentSpy.mock.calls[0]?.[0] as {
+      params?: { sessionKey?: string; channel?: string; to?: string };
+    };
+    expect(call?.params?.sessionKey).toBe("agent:main:chat_v27ql1cqij2y");
+    expect(call?.params?.channel).toBe("genesis");
+    expect(call?.params?.to).toBe("sxa999umgpg88pfriamgoao9ma");
+  });
+
   it("includes success status when outcome is ok", async () => {
     // Use waitForCompletion: false so it uses the provided outcome instead of calling agent.wait
     await runSubagentAnnounceFlow({
