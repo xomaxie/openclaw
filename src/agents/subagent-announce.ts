@@ -545,6 +545,13 @@ function readSessionStoreEntryByKey(
   return store[key] ?? store[key.toLowerCase()];
 }
 
+function hasSessionRoute(entry?: DeliveryContextSource): boolean {
+  const route = deliveryContextFromSession(entry);
+  const channel = route?.channel?.trim();
+  const to = route?.to?.trim();
+  return Boolean(channel && to);
+}
+
 function loadRequesterSessionEntry(requesterSessionKey: string) {
   const cfg = loadConfig();
   const canonicalKey = resolveRequesterStoreKey(cfg, requesterSessionKey);
@@ -552,6 +559,22 @@ function loadRequesterSessionEntry(requesterSessionKey: string) {
   const storePath = resolveStorePath(cfg.session?.store, { agentId });
   const store = loadSessionStore(storePath);
   const entry = readSessionStoreEntryByKey(store, canonicalKey);
+  const rawRequester = requesterSessionKey.trim().toLowerCase();
+  const shouldFallbackToMainRoute =
+    rawRequester.length > 0 &&
+    !rawRequester.startsWith("agent:") &&
+    rawRequester !== "main" &&
+    rawRequester !== "global" &&
+    rawRequester !== "unknown";
+  if (shouldFallbackToMainRoute && !hasSessionRoute(entry)) {
+    const mainKey = resolveMainSessionKey(cfg);
+    const mainEntry = readSessionStoreEntryByKey(store, mainKey);
+    const mainRoute = deliveryContextFromSession(mainEntry);
+    const mainTo = mainRoute?.to?.trim().toLowerCase();
+    if (mainTo && mainTo === rawRequester && hasSessionRoute(mainEntry)) {
+      return { cfg, entry: mainEntry, canonicalKey };
+    }
+  }
   return { cfg, entry, canonicalKey };
 }
 

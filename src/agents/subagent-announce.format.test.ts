@@ -245,6 +245,39 @@ describe("subagent announce formatting", () => {
     expect(call?.params?.sessionKey).toBe("agent:main:chat_v27ql1cqij2y");
   });
 
+  it("falls back to main session delivery context for chat aliases without channel metadata", async () => {
+    sessionStore = {
+      "agent:main:chat_v27ql1cqij2y": {
+        sessionId: "chat-session",
+      },
+      "agent:main:main": {
+        sessionId: "main-session",
+        deliveryContext: {
+          channel: "genesis",
+          to: "chat_V27qL1CQIJ2Y",
+        },
+        lastChannel: "genesis",
+        lastTo: "chat_V27qL1CQIJ2Y",
+      },
+    };
+
+    await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-chat-alias-fallback",
+      requesterSessionKey: "chat_V27qL1CQIJ2Y",
+      requesterDisplayKey: "chat_V27qL1CQIJ2Y",
+      expectsCompletionMessage: true,
+      ...defaultOutcomeAnnounce,
+    });
+
+    const call = agentSpy.mock.calls[0]?.[0] as {
+      params?: { sessionKey?: string; channel?: string; to?: string };
+    };
+    expect(call?.params?.sessionKey).toBe("agent:main:chat_v27ql1cqij2y");
+    expect(call?.params?.channel).toBe("genesis");
+    expect(call?.params?.to).toBe("chat_V27qL1CQIJ2Y");
+  });
+
   it("includes success status when outcome is ok", async () => {
     // Use waitForCompletion: false so it uses the provided outcome instead of calling agent.wait
     await runSubagentAnnounceFlow({
