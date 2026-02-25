@@ -66,6 +66,10 @@ import {
   type StreamingEvent,
   type Usage,
 } from "./open-responses.schema.js";
+import {
+  getOpenResponsesToolCallRegistry,
+  type OpenResponsesToolCallConsumeFailureReason,
+} from "./openresponses-tool-call-registry.js";
 
 type OpenResponsesHttpOptions = {
   auth: ResolvedGatewayAuth;
@@ -429,13 +433,42 @@ function createObservedToolOutputItems(calls: ObservedToolCall[]): OutputItem[] 
   }));
 }
 
+function extractFunctionCallOutputItems(input: CreateResponseBody["input"]): string[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const callIds: string[] = [];
+  for (const item of input) {
+    if (item.type !== "function_call_output") {
+      continue;
+    }
+    callIds.push(item.call_id);
+  }
+  return callIds;
+}
+
+function sendToolCallSessionMismatch(
+  res: ServerResponse,
+  details: OpenResponsesToolCallConsumeFailureReason | "missing_previous_response_id",
+) {
+  sendJson(res, 409, {
+    error: {
+      type: "invalid_request_error",
+      code: "tool_call_session_mismatch",
+      message: `function_call_output rejected (${details})`,
+    },
+  });
+}
+
 export async function handleOpenResponsesHttpRequest(
   req: IncomingMessage,
   res: ServerResponse,
   opts: OpenResponsesHttpOptions,
 ): Promise<boolean> {
   const url = new URL(req.url ?? "/", `http://${req.headers.host || "localhost"}`);
-  if (url.pathname !== "/v1/responses") {
+  const isResponsesPath = url.pathname === "/v1/responses";
+  const isSessionsResetPath = url.pathname === "/v1/responses/sessions/reset";
+  if (!isResponsesPath && !isSessionsResetPath) {
     return false;
   }
 
@@ -465,6 +498,28 @@ export async function handleOpenResponsesHttpRequest(
       : Math.max(limits.maxBodyBytes, limits.files.maxBytes * 2, limits.images.maxBytes * 2));
   const body = await readJsonBodyOrError(req, res, maxBodyBytes);
   if (body === undefined) {
+    return true;
+  }
+
+  const toolCallRegistry = getOpenResponsesToolCallRegistry();
+
+  if (isSessionsResetPath) {
+    const sessionKey =
+      typeof (body as { session_key?: unknown } | null)?.session_key === "string"
+        ? (body as { session_key: string }).session_key.trim()
+        : "";
+    if (!sessionKey) {
+      sendJson(res, 400, {
+        error: {
+          type: "invalid_request_error",
+          message: "session_key is required",
+        },
+      });
+      return true;
+    }
+    const cleared = toolCallRegistry.resetSession(sessionKey);
+    toolCallRegistry.prune();
+    sendJson(res, 200, { ok: true, key: sessionKey, cleared });
     return true;
   }
 
@@ -595,6 +650,40 @@ export async function handleOpenResponsesHttpRequest(
   }
   const agentId = resolveAgentIdForRequest({ req, model });
   const sessionKey = resolveOpenResponsesSessionKey({ req, agentId, user });
+  const functionCallOutputs = extractFunctionCallOutputItems(payload.input);
+  if (functionCallOutputs.length > 0) {
+    const previousResponseId =
+      typeof payload.previous_response_id === "string" ? payload.previous_response_id.trim() : "";
+    if (!previousResponseId) {
+      sendToolCallSessionMismatch(res, "missing_previous_response_id");
+      return true;
+    }
+
+    for (const callId of functionCallOutputs) {
+      const exists = toolCallRegistry.hasPendingCall({
+        sessionKey,
+        responseId: previousResponseId,
+        callId,
+      });
+      if (!exists) {
+        sendToolCallSessionMismatch(res, "call_not_found");
+        return true;
+      }
+    }
+
+    for (const callId of functionCallOutputs) {
+      const consumed = toolCallRegistry.consumeToolOutput({
+        sessionKey,
+        previousResponseId,
+        callId,
+      });
+      if (!consumed.ok) {
+        sendToolCallSessionMismatch(res, consumed.reason);
+        return true;
+      }
+    }
+    toolCallRegistry.prune();
+  }
 
   const explicitSessionKeyHeaderRaw = req.headers["x-openclaw-session-key"];
   const explicitSessionKeyHeader =
@@ -696,6 +785,16 @@ export async function handleOpenResponsesHttpRequest(
       // If agent called a client tool, return function_call instead of text
       if (stopReason === "tool_calls" && pendingToolCalls && pendingToolCalls.length > 0) {
         const functionCall = pendingToolCalls[0];
+        for (const pendingToolCall of pendingToolCalls) {
+          toolCallRegistry.registerPendingCall({
+            sessionKey,
+            responseId,
+            callId: pendingToolCall.id,
+            toolName: pendingToolCall.name,
+            arguments: pendingToolCall.arguments,
+          });
+        }
+        toolCallRegistry.prune();
         const functionCallItemId = `call_${randomUUID()}`;
         const response = createResponseResource({
           id: responseId,
@@ -735,13 +834,17 @@ export async function handleOpenResponsesHttpRequest(
           ...observedToolItems,
         ],
         usage,
-        reasoning: responseReasoning,
-      });
+          reasoning: responseReasoning,
+        });
+        toolCallRegistry.completeTurn({ sessionKey, responseId });
+        toolCallRegistry.prune();
 
-      sendJson(res, 200, response);
-    } catch (err) {
-      logWarn(`openresponses: non-stream response failed: ${String(err)}`);
-      const response = createResponseResource({
+        sendJson(res, 200, response);
+      } catch (err) {
+        logWarn(`openresponses: non-stream response failed: ${String(err)}`);
+        toolCallRegistry.completeTurn({ sessionKey, responseId });
+        toolCallRegistry.prune();
+        const response = createResponseResource({
         id: responseId,
         model,
         status: "failed",
@@ -783,6 +886,8 @@ export async function handleOpenResponsesHttpRequest(
       return;
     }
     const usage = finalUsage;
+    toolCallRegistry.completeTurn({ sessionKey, responseId });
+    toolCallRegistry.prune();
 
     closed = true;
     unsubscribe();
@@ -1030,6 +1135,16 @@ export async function handleOpenResponsesHttpRequest(
         if (stopReason === "tool_calls" && pendingToolCalls && pendingToolCalls.length > 0) {
           const functionCall = pendingToolCalls[0];
           const usage = finalUsage ?? createEmptyUsage();
+          for (const pendingToolCall of pendingToolCalls) {
+            toolCallRegistry.registerPendingCall({
+              sessionKey,
+              responseId,
+              callId: pendingToolCall.id,
+              toolName: pendingToolCall.name,
+              arguments: pendingToolCall.arguments,
+            });
+          }
+          toolCallRegistry.prune();
 
           writeSseEvent(res, {
             type: "response.output_text.done",
@@ -1131,6 +1246,8 @@ export async function handleOpenResponsesHttpRequest(
       if (closed) {
         return;
       }
+      toolCallRegistry.completeTurn({ sessionKey, responseId });
+      toolCallRegistry.prune();
 
       finalUsage = finalUsage ?? createEmptyUsage();
       const errorResponse = createResponseResource({

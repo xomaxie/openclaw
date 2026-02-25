@@ -20,6 +20,7 @@ OpenClaw 的 Gateway 网关可以提供兼容 OpenResponses 的 `POST /v1/respon
 此端点**默认禁用**。请先在配置中启用。
 
 - `POST /v1/responses`
+- `POST /v1/responses/sessions/reset`
 - 与 Gateway 网关相同的端口（WS + HTTP 多路复用）：`http://<gateway-host>:<port>/v1/responses`
 
 底层实现中，请求作为正常的 Gateway 网关智能体运行执行（与 `openclaw agent` 相同的代码路径），因此路由/权限/配置与你的 Gateway 网关一致。
@@ -106,8 +107,11 @@ OpenClaw 的 Gateway 网关可以提供兼容 OpenResponses 的 `POST /v1/respon
 - `reasoning`
 - `metadata`
 - `store`
-- `previous_response_id`
 - `truncation`
+
+条件必需：
+
+- 当 `input` 包含 `function_call_output` 时，必须同时提供 `previous_response_id`。
 
 ## Item（输入）
 
@@ -130,6 +134,12 @@ OpenClaw 的 Gateway 网关可以提供兼容 OpenResponses 的 `POST /v1/respon
   "output": "{\"temperature\": \"72F\"}"
 }
 ```
+
+校验规则：
+
+- 请求必须包含 `previous_response_id`。
+- `call_id` 必须匹配同一会话键 + 同一父响应回合的待处理工具调用。
+- 重放或跨会话/跨回合错配会返回 `409`。
 
 ### `reasoning` 和 `item_reference`
 
@@ -273,6 +283,20 @@ URL 获取默认值：
 
 当底层提供商报告令牌计数时，`usage` 会被填充。
 
+## 会话状态重置端点
+
+用于直接清理 OpenResponses 工具调用会话状态：
+
+- `POST /v1/responses/sessions/reset`
+- 请求体：`{ "session_key": "<resolved-session-key>", "reason": "manual|recovery|debug" }`
+- 认证：与 `/v1/responses` 相同的 bearer auth
+
+成功响应：
+
+```json
+{ "ok": true, "key": "agent:main:openresponses-user:alice", "cleared": 3 }
+```
+
 ## 错误
 
 错误使用如下 JSON 对象：
@@ -285,6 +309,7 @@ URL 获取默认值：
 
 - `401` 缺少/无效认证
 - `400` 无效请求体
+- `409` 工具调用回合/会话不匹配（`tool_call_session_mismatch`）
 - `405` 错误的方法
 
 ## 示例
