@@ -1,4 +1,9 @@
-type PendingToolCallRecord = {
+import {
+  loadOpenResponsesToolCallRegistrySnapshot,
+  saveOpenResponsesToolCallRegistrySnapshot,
+} from "./openresponses-tool-call-registry.store.js";
+
+export type OpenResponsesPendingToolCallRecord = {
   sessionKey: string;
   responseId: string;
   callId: string;
@@ -8,7 +13,7 @@ type PendingToolCallRecord = {
 };
 
 type SessionToolCallState = {
-  responses: Map<string, Map<string, PendingToolCallRecord>>;
+  responses: Map<string, Map<string, OpenResponsesPendingToolCallRecord>>;
   callToResponse: Map<string, string>;
   consumedCalls: Map<string, number>;
   lastActivity: number;
@@ -21,7 +26,7 @@ export type OpenResponsesToolCallConsumeFailureReason =
   | "call_already_consumed";
 
 export type OpenResponsesToolCallConsumeResult =
-  | { ok: true; call: PendingToolCallRecord }
+  | { ok: true; call: OpenResponsesPendingToolCallRecord }
   | { ok: false; reason: OpenResponsesToolCallConsumeFailureReason };
 
 export type OpenResponsesToolCallRegistry = {
@@ -43,6 +48,7 @@ export type OpenResponsesToolCallRegistry = {
   prune: (now?: number) => number;
   pendingCountForSession: (sessionKey: string) => number;
   hasPendingCall: (params: { sessionKey: string; responseId: string; callId: string }) => boolean;
+  listPendingCalls: () => OpenResponsesPendingToolCallRecord[];
 };
 
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
@@ -142,7 +148,7 @@ export function createOpenResponsesToolCallRegistry(params?: {
         state.responses.set(responseId, pendingForResponse);
       }
 
-      const record: PendingToolCallRecord = {
+      const record: OpenResponsesPendingToolCallRecord = {
         sessionKey,
         responseId,
         callId,
@@ -296,13 +302,109 @@ export function createOpenResponsesToolCallRegistry(params?: {
       }
       return Boolean(state.responses.get(responseId)?.has(callId));
     },
+
+    listPendingCalls: () => {
+      const calls: OpenResponsesPendingToolCallRecord[] = [];
+      for (const state of sessions.values()) {
+        for (const byCallId of state.responses.values()) {
+          calls.push(...byCallId.values());
+        }
+      }
+      return calls;
+    },
   };
 }
 
 let sharedOpenResponsesToolCallRegistry: OpenResponsesToolCallRegistry | undefined;
 
+function shouldPersistSharedOpenResponsesToolCallRegistry(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const explicit = env.OPENCLAW_OPENRESPONSES_TOOL_CALL_REGISTRY_PERSIST?.trim().toLowerCase();
+  if (explicit === "0" || explicit === "false" || explicit === "off") {
+    return false;
+  }
+  if (explicit === "1" || explicit === "true" || explicit === "on") {
+    return true;
+  }
+  if (env.VITEST || env.NODE_ENV === "test") {
+    return false;
+  }
+  return true;
+}
+
+function createSharedOpenResponsesToolCallRegistry(): OpenResponsesToolCallRegistry {
+  const base = createOpenResponsesToolCallRegistry();
+  if (!shouldPersistSharedOpenResponsesToolCallRegistry(process.env)) {
+    return base;
+  }
+
+  try {
+    const pendingCalls = loadOpenResponsesToolCallRegistrySnapshot();
+    for (const pending of pendingCalls) {
+      base.registerPendingCall({
+        sessionKey: pending.sessionKey,
+        responseId: pending.responseId,
+        callId: pending.callId,
+        toolName: pending.toolName,
+        arguments: pending.arguments,
+        createdAt: pending.createdAt,
+      });
+    }
+    base.prune();
+  } catch {
+    // Best-effort restore; runtime continues with empty in-memory state on failure.
+  }
+
+  const persist = () => {
+    try {
+      saveOpenResponsesToolCallRegistrySnapshot({ pendingCalls: base.listPendingCalls() });
+    } catch {
+      // Best-effort persistence; avoid request-path failures on disk errors.
+    }
+  };
+
+  return {
+    registerPendingCall: (params) => {
+      base.registerPendingCall(params);
+      persist();
+    },
+    consumeToolOutput: (params) => {
+      const result = base.consumeToolOutput(params);
+      if (result.ok) {
+        persist();
+      }
+      return result;
+    },
+    completeTurn: (params) => {
+      const removed = base.completeTurn(params);
+      if (removed > 0) {
+        persist();
+      }
+      return removed;
+    },
+    resetSession: (sessionKey) => {
+      const removed = base.resetSession(sessionKey);
+      if (removed > 0) {
+        persist();
+      }
+      return removed;
+    },
+    prune: (now) => {
+      const removed = base.prune(now);
+      if (removed > 0) {
+        persist();
+      }
+      return removed;
+    },
+    pendingCountForSession: base.pendingCountForSession,
+    hasPendingCall: base.hasPendingCall,
+    listPendingCalls: base.listPendingCalls,
+  };
+}
+
 export function getOpenResponsesToolCallRegistry(): OpenResponsesToolCallRegistry {
-  sharedOpenResponsesToolCallRegistry ??= createOpenResponsesToolCallRegistry();
+  sharedOpenResponsesToolCallRegistry ??= createSharedOpenResponsesToolCallRegistry();
   return sharedOpenResponsesToolCallRegistry;
 }
 

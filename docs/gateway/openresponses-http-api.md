@@ -13,6 +13,7 @@ OpenClaw’s Gateway can serve an OpenResponses-compatible `POST /v1/responses` 
 This endpoint is **disabled by default**. Enable it in config first.
 
 - `POST /v1/responses`
+- `POST /v1/responses/sessions/reset`
 - Same port as the Gateway (WS + HTTP multiplex): `http://<gateway-host>:<port>/v1/responses`
 
 Under the hood, requests are executed as a normal Gateway agent run (same codepath as
@@ -102,8 +103,11 @@ Accepted but **currently ignored**:
 - `reasoning`
 - `metadata`
 - `store`
-- `previous_response_id`
 - `truncation`
+
+Conditionally required:
+
+- `previous_response_id` is required when `input` includes one or more `function_call_output` items.
 
 ## Items (input)
 
@@ -126,6 +130,12 @@ Send tool results back to the model:
   "output": "{\"temperature\": \"72F\"}"
 }
 ```
+
+Validation rules:
+
+- You must include `previous_response_id` on the same request.
+- `call_id` must match a pending tool call registered for the same session key and parent response id.
+- Replays and cross-session/cross-turn mismatches are rejected with `409`.
 
 ### `reasoning` and `item_reference`
 
@@ -289,6 +299,20 @@ Event types currently emitted:
 
 `usage` is populated when the underlying provider reports token counts.
 
+## Session-state reset endpoint
+
+Use this endpoint to clear OpenResponses tool-call session state directly:
+
+- `POST /v1/responses/sessions/reset`
+- Body: `{ "session_key": "<resolved-session-key>", "reason": "manual|recovery|debug" }`
+- Auth: same gateway bearer auth as `/v1/responses`
+
+Success response:
+
+```json
+{ "ok": true, "key": "agent:main:openresponses-user:alice", "cleared": 3 }
+```
+
 ## Errors
 
 Errors use a JSON object like:
@@ -301,6 +325,7 @@ Common cases:
 
 - `401` missing/invalid auth
 - `400` invalid request body
+- `409` tool-call turn/session mismatch (`tool_call_session_mismatch`)
 - `405` wrong method
 
 ## Examples
