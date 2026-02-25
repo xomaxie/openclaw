@@ -4,6 +4,10 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
 import { DEFAULT_PROVIDER } from "../agents/defaults.js";
+import {
+  getOpenResponsesToolCallRegistry,
+  resetOpenResponsesToolCallRegistryForTest,
+} from "./openresponses-tool-call-registry.js";
 import { GATEWAY_CLIENT_IDS, GATEWAY_CLIENT_MODES } from "./protocol/client-info.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
 import { createToolSummaryPreviewTranscriptLines } from "./session-preview.test-helpers.js";
@@ -171,6 +175,7 @@ describe("gateway server sessions", () => {
     subagentLifecycleHookMocks.runSubagentEnded.mockClear();
     subagentLifecycleHookState.hasSubagentEndedHook = true;
     threadBindingMocks.unbindThreadBindingsBySessionKey.mockClear();
+    resetOpenResponsesToolCallRegistryForTest();
   });
 
   test("lists and patches session store via sessions.* RPC", async () => {
@@ -831,6 +836,37 @@ describe("gateway server sessions", () => {
       reason: "session-reset",
       sendFarewell: true,
     });
+
+    ws.close();
+  });
+
+  test("sessions.reset clears OpenResponses tool-call registry state for related keys", async () => {
+    await seedActiveMainSession();
+
+    const registry = getOpenResponsesToolCallRegistry();
+    registry.registerPendingCall({
+      sessionKey: "agent:main:main",
+      responseId: "resp_1",
+      callId: "call_canonical",
+      toolName: "get_weather",
+      arguments: "{}",
+    });
+    registry.registerPendingCall({
+      sessionKey: "main",
+      responseId: "resp_2",
+      callId: "call_alias",
+      toolName: "get_weather",
+      arguments: "{}",
+    });
+    expect(registry.pendingCountForSession("agent:main:main")).toBe(1);
+    expect(registry.pendingCountForSession("main")).toBe(1);
+
+    const { ws } = await openClient();
+    const reset = await rpcReq<{ ok: true; key: string }>(ws, "sessions.reset", { key: "main" });
+    expect(reset.ok).toBe(true);
+
+    expect(registry.pendingCountForSession("agent:main:main")).toBe(0);
+    expect(registry.pendingCountForSession("main")).toBe(0);
 
     ws.close();
   });

@@ -57,6 +57,23 @@ async function postResponses(port: number, body: unknown, headers?: Record<strin
   return res;
 }
 
+async function postResponsesSessionReset(
+  port: number,
+  body: unknown,
+  headers?: Record<string, string>,
+) {
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses/sessions/reset`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer secret",
+      ...headers,
+    },
+    body: JSON.stringify(body),
+  });
+  return res;
+}
+
 function parseSseEvents(text: string): Array<{ event?: string; data: string }> {
   const events: Array<{ event?: string; data: string }> = [];
   const lines = text.split("\n");
@@ -257,9 +274,51 @@ describe("OpenResponses HTTP API (e2e)", () => {
       expect(historyMessage).toContain("User: What did I just ask you?");
       await ensureResponseConsumed(resHistory);
 
-      mockAgentOnce([{ text: "ok" }]);
+      const resFunctionOutputMissingPrevious = await postResponses(port, {
+        model: "openclaw",
+        input: [
+          { type: "message", role: "user", content: "What's the weather?" },
+          { type: "function_call_output", call_id: "call_1", output: "Sunny, 70F." },
+        ],
+      });
+      expect(resFunctionOutputMissingPrevious.status).toBe(409);
+      const functionOutputMissingPreviousJson =
+        (await resFunctionOutputMissingPrevious.json()) as {
+          error?: { type?: string; code?: string };
+        };
+      expect(functionOutputMissingPreviousJson.error?.type).toBe("invalid_request_error");
+      expect(functionOutputMissingPreviousJson.error?.code).toBe("tool_call_session_mismatch");
+      await ensureResponseConsumed(resFunctionOutputMissingPrevious);
+
+      agentCommand.mockReset();
+      agentCommand.mockResolvedValueOnce({
+        payloads: [],
+        meta: {
+          stopReason: "tool_calls",
+          pendingToolCalls: [{ id: "call_1", name: "get_weather", arguments: "{}" }],
+        },
+      } as never);
+      const resFunctionCall = await postResponses(port, {
+        model: "openclaw",
+        user: "alice",
+        input: [{ type: "message", role: "user", content: "What's the weather?" }],
+      });
+      expect(resFunctionCall.status).toBe(200);
+      const functionCallJson = (await resFunctionCall.json()) as {
+        id?: string;
+        output?: Array<{ type?: string; call_id?: string }>;
+      };
+      const previousResponseId = functionCallJson.id ?? "";
+      expect(previousResponseId).toMatch(/^resp_/);
+      expect(functionCallJson.output?.[0]?.type).toBe("function_call");
+      expect(functionCallJson.output?.[0]?.call_id).toBe("call_1");
+      await ensureResponseConsumed(resFunctionCall);
+
+      mockAgentOnce([{ text: "Sunny, 70F." }]);
       const resFunctionOutput = await postResponses(port, {
         model: "openclaw",
+        user: "alice",
+        previous_response_id: previousResponseId,
         input: [
           { type: "message", role: "user", content: "What's the weather?" },
           { type: "function_call_output", call_id: "call_1", output: "Sunny, 70F." },
@@ -271,6 +330,56 @@ describe("OpenResponses HTTP API (e2e)", () => {
         (optsFunctionOutput as { message?: string } | undefined)?.message ?? "";
       expect(functionOutputMessage).toContain("Sunny, 70F.");
       await ensureResponseConsumed(resFunctionOutput);
+
+      mockAgentOnce([{ text: "ok" }]);
+      const resFunctionOutputReplay = await postResponses(port, {
+        model: "openclaw",
+        user: "alice",
+        previous_response_id: previousResponseId,
+        input: [{ type: "function_call_output", call_id: "call_1", output: "Sunny, 70F." }],
+      });
+      expect(resFunctionOutputReplay.status).toBe(409);
+      const replayJson = (await resFunctionOutputReplay.json()) as {
+        error?: { type?: string; code?: string };
+      };
+      expect(replayJson.error?.type).toBe("invalid_request_error");
+      expect(replayJson.error?.code).toBe("tool_call_session_mismatch");
+      await ensureResponseConsumed(resFunctionOutputReplay);
+
+      agentCommand.mockReset();
+      agentCommand.mockResolvedValueOnce({
+        payloads: [],
+        meta: {
+          stopReason: "tool_calls",
+          pendingToolCalls: [{ id: "call_cross", name: "get_weather", arguments: "{}" }],
+        },
+      } as never);
+      const crossSessionToolCall = await postResponses(port, {
+        model: "openclaw",
+        user: "alice",
+        input: [{ type: "message", role: "user", content: "call cross-session tool" }],
+      });
+      expect(crossSessionToolCall.status).toBe(200);
+      const crossSessionToolCallJson = (await crossSessionToolCall.json()) as {
+        id?: string;
+      };
+      const crossPreviousResponseId = crossSessionToolCallJson.id ?? "";
+      await ensureResponseConsumed(crossSessionToolCall);
+
+      mockAgentOnce([{ text: "ok" }]);
+      const crossSessionOutput = await postResponses(port, {
+        model: "openclaw",
+        user: "bob",
+        previous_response_id: crossPreviousResponseId,
+        input: [{ type: "function_call_output", call_id: "call_cross", output: "done" }],
+      });
+      expect(crossSessionOutput.status).toBe(409);
+      const crossSessionOutputJson = (await crossSessionOutput.json()) as {
+        error?: { type?: string; code?: string };
+      };
+      expect(crossSessionOutputJson.error?.type).toBe("invalid_request_error");
+      expect(crossSessionOutputJson.error?.code).toBe("tool_call_session_mismatch");
+      await ensureResponseConsumed(crossSessionOutput);
 
       mockAgentOnce([{ text: "ok" }]);
       const resInputFile = await postResponses(port, {
@@ -643,6 +752,74 @@ describe("OpenResponses HTTP API (e2e)", () => {
     } finally {
       // shared server
     }
+  });
+
+  it("supports OpenResponses session reset endpoint", async () => {
+    const port = enabledPort;
+
+    agentCommand.mockReset();
+    agentCommand.mockResolvedValueOnce({
+      payloads: [],
+      meta: {
+        stopReason: "tool_calls",
+        pendingToolCalls: [{ id: "call_reset", name: "get_weather", arguments: "{}" }],
+      },
+    } as never);
+
+    const resFunctionCall = await postResponses(port, {
+      model: "openclaw",
+      user: "reset-user",
+      input: [{ type: "message", role: "user", content: "Need tool" }],
+    });
+    expect(resFunctionCall.status).toBe(200);
+    const functionCallJson = (await resFunctionCall.json()) as { id?: string };
+    const previousResponseId = functionCallJson.id ?? "";
+    await ensureResponseConsumed(resFunctionCall);
+
+    const sessionKey = (
+      (agentCommand.mock.calls[0] as unknown[] | undefined)?.[0] as { sessionKey?: string }
+    )?.sessionKey;
+    expect(sessionKey ?? "").toContain("openresponses-user:reset-user");
+
+    const resetMissingAuth = await fetch(`http://127.0.0.1:${port}/v1/responses/sessions/reset`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_key: sessionKey }),
+    });
+    expect(resetMissingAuth.status).toBe(401);
+    await ensureResponseConsumed(resetMissingAuth);
+
+    const resetBadBody = await postResponsesSessionReset(port, { session_key: "   " });
+    expect(resetBadBody.status).toBe(400);
+    await ensureResponseConsumed(resetBadBody);
+
+    const resetOk = await postResponsesSessionReset(port, {
+      session_key: sessionKey,
+      reason: "manual",
+    });
+    expect(resetOk.status).toBe(200);
+    const resetJson = (await resetOk.json()) as { ok?: boolean; key?: string; cleared?: number };
+    expect(resetJson.ok).toBe(true);
+    expect(resetJson.key).toBe(sessionKey);
+    expect(typeof resetJson.cleared).toBe("number");
+    expect((resetJson.cleared ?? 0) > 0).toBe(true);
+    await ensureResponseConsumed(resetOk);
+
+    agentCommand.mockReset();
+    agentCommand.mockResolvedValueOnce({ payloads: [{ text: "ok" }] } as never);
+    const staleCallOutput = await postResponses(port, {
+      model: "openclaw",
+      user: "reset-user",
+      previous_response_id: previousResponseId,
+      input: [{ type: "function_call_output", call_id: "call_reset", output: "done" }],
+    });
+    expect(staleCallOutput.status).toBe(409);
+    const staleCallOutputJson = (await staleCallOutput.json()) as {
+      error?: { type?: string; code?: string };
+    };
+    expect(staleCallOutputJson.error?.type).toBe("invalid_request_error");
+    expect(staleCallOutputJson.error?.code).toBe("tool_call_session_mismatch");
+    await ensureResponseConsumed(staleCallOutput);
   });
 
   it("blocks unsafe URL-based file/image inputs", async () => {

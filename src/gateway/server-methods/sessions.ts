@@ -32,6 +32,7 @@ import {
   validateSessionsResetParams,
   validateSessionsResolveParams,
 } from "../protocol/index.js";
+import { resetOpenResponsesToolCallRegistryBySessionKey } from "../openresponses-tool-call-registry.js";
 import {
   archiveFileOnDisk,
   archiveSessionTranscripts,
@@ -202,6 +203,24 @@ async function ensureSessionRuntimeCleanup(params: {
   );
 }
 
+function resetOpenResponsesSessionStateForTarget(params: {
+  requestedKey: string;
+  target: ReturnType<typeof resolveGatewaySessionStoreTarget>;
+}) {
+  const keys = new Set<string>();
+  keys.add(params.requestedKey);
+  keys.add(params.target.canonicalKey);
+  for (const candidate of params.target.storeKeys) {
+    keys.add(candidate);
+  }
+  for (const key of keys) {
+    if (!key || key.trim().length === 0) {
+      continue;
+    }
+    resetOpenResponsesToolCallRegistryBySessionKey(key);
+  }
+}
+
 export const sessionsHandlers: GatewayRequestHandlers = {
   "sessions.list": ({ params, respond }) => {
     if (!assertValidParams(params, validateSessionsListParams, "sessions.list", respond)) {
@@ -348,6 +367,7 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     }
 
     const { cfg, target, storePath } = resolveGatewaySessionTargetFromKey(key);
+    resetOpenResponsesSessionStateForTarget({ requestedKey: key, target });
     const { entry } = loadSessionEntry(key);
     const hadExistingEntry = Boolean(entry);
     const commandReason = p.reason === "new" ? "new" : "reset";
