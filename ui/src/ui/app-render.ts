@@ -286,6 +286,22 @@ export function renderApp(state: AppViewState) {
             <span class="nav-label__text">${t("common.resources")}</span>
           </div>
           <div class="nav-group__items">
+            ${
+              isChat && !state.chatRunId
+                ? html`
+                  <button
+                    type="button"
+                    class="nav-item nav-item--mobile-only nav-item--mobile-action"
+                    ?disabled=${!state.connected || state.chatSending}
+                    @click=${() => state.handleSendChat("/new", { restoreDraft: true })}
+                    title="New session"
+                  >
+                    <span class="nav-item__icon" aria-hidden="true">${icons.messageSquare}</span>
+                    <span class="nav-item__text">New session</span>
+                  </button>
+                `
+                : nothing
+            }
             <a
               class="nav-item nav-item--external"
               href="https://docs.openclaw.ai"

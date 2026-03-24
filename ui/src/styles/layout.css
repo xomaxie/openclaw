@@ -367,6 +367,10 @@
     color var(--duration-fast) ease;
 }
 
+.nav-item--mobile-only {
+  display: none;
+}
+
 .nav-item__icon {
   width: 16px;
   height: 16px;

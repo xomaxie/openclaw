@@ -15,6 +15,12 @@ import type { ChatAttachment, ChatQueueItem } from "../ui-types.ts";
 import { renderMarkdownSidebar } from "./markdown-sidebar.ts";
 import "../components/resizable-divider.ts";
 
+/** True when the device supports touch interaction — guards destructive actions against fat-finger taps. */
+const IS_TOUCH_DEVICE = navigator.maxTouchPoints > 0;
+
+/** On touch devices, the New Session button requires holding for this many ms to activate. */
+const LONG_PRESS_DELAY_MS = 1_000;
+
 export type CompactionIndicatorStatus = {
   active: boolean;
   startedAt: number | null;
@@ -458,13 +464,54 @@ export function renderChat(props: ChatProps) {
             ></textarea>
           </label>
           <div class="chat-compose__actions">
-            <button
-              class="btn"
-              ?disabled=${!props.connected || (!canAbort && props.sending)}
-              @click=${canAbort ? props.onAbort : props.onNewSession}
-            >
-              ${canAbort ? "Stop" : "New session"}
-            </button>
+            ${
+              canAbort
+                ? html`
+                  <button class="btn" ?disabled=${!props.connected} @click=${props.onAbort}>
+                    Stop
+                  </button>
+                `
+                : html`
+                  <button
+                    class=${IS_TOUCH_DEVICE ? "btn touch-guarded chat-compose__new-session-btn" : "btn chat-compose__new-session-btn"}
+                    ?disabled=${!props.connected || props.sending}
+                    @click=${IS_TOUCH_DEVICE ? nothing : props.onNewSession}
+                    ${ref((el) => {
+                      if (!el || !IS_TOUCH_DEVICE) {
+                        return;
+                      }
+                      let timer: ReturnType<typeof setTimeout> | undefined;
+                      const clear = () => {
+                        if (timer !== undefined) {
+                          clearTimeout(timer);
+                          timer = undefined;
+                        }
+                        el.classList.remove("touch-guarded--holding");
+                        el.removeAttribute("data-hint");
+                      };
+                      el.addEventListener(
+                        "touchstart",
+                        () => {
+                          el.classList.add("touch-guarded--holding");
+                          el.setAttribute("data-hint", "hold");
+                          timer = setTimeout(() => {
+                            clear();
+                            el.setAttribute("data-hint", "done");
+                            props.onNewSession();
+                            setTimeout(() => el?.removeAttribute("data-hint"), 600);
+                          }, LONG_PRESS_DELAY_MS);
+                        },
+                        { passive: true },
+                      );
+                      el.addEventListener("touchend", clear);
+                      el.addEventListener("touchcancel", clear);
+                      el.addEventListener("touchmove", clear, { passive: true });
+                    })}
+                  >
+                    New session
+                  </button>
+                `
+            }
             <button
               class="btn primary"
               ?disabled=${!props.connected}

@@ -220,6 +220,7 @@ describe("chat view", () => {
       (btn) => btn.textContent?.trim() === "New session",
     );
     expect(newSessionButton).not.toBeUndefined();
+    expect(newSessionButton?.classList.contains("chat-compose__new-session-btn")).toBe(true);
     newSessionButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(onNewSession).toHaveBeenCalledTimes(1);
     expect(container.textContent).not.toContain("Stop");
