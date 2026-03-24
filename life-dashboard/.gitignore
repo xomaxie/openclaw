@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.env
+.env.tts
+.secrets/
+data/
+*.db
+*.db-journal
+*.log
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.venv/

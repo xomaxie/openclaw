@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compass — Daily Direction</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <a href="/" class="logo">
+                    <div class="logo-icon">🧭</div>
+                    <span>Compass</span>
+                </a>
+                <div class="header-meta">
+                    <div class="status-indicator">
+                        <span class="status-dot"></span>
+                        <span>Online</span>
+                    </div>
+                    <span>•</span>
+                    <span id="location">Austin, TX</span>
+                </div>
+            </div>
+            <div class="header-actions">
+                <span style="color: var(--text-tertiary); font-size: 0.875rem;" id="last-updated">--:--</span>
+                <button class="btn btn-primary" id="refresh-btn" onclick="refreshAll()">
+                    <span>↻</span>
+                    <span>Refresh</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Left Rail: Actions & Urgency -->
+            <aside class="left-rail">
+                <!-- Quick Brief -->
+                <section class="rail-section">
+                    <div class="section-header">
+                        <span class="section-title">Today</span>
+                    </div>
+                    <div class="quick-brief" id="quick-brief">
+                        <div class="brief-date">Loading...</div>
+                        <div class="brief-text">Fetching your daily brief...</div>
+                    </div>
+                </section>
+
+                <!-- Action Items / Checklist -->
+                <section class="rail-section">
+                    <div class="section-header">
+                        <span class="section-title">Action Items</span>
+                        <span class="section-count" id="action-count">0 pending</span>
+                    </div>
+                    <div class="checklist" id="checklist-container">
+                        <div class="loading">
+                            <div class="spinner"></div>
+                        </div>
+                    </div>
+                    <div class="add-action">
+                        <input type="text" id="add-action-input" placeholder="Add a new action..." maxlength="100">
+                    </div>
+                </section>
+
+                <!-- Compact Weather Signal -->
+                <section class="rail-section">
+                    <div class="section-header">
+                        <span class="section-title">Weather</span>
+                        <span class="section-count" id="weather-alert-badge" style="display: none;">!</span>
+                    </div>
+                    <a href="/weather" class="weather-signal clickable" id="weather-signal" style="text-decoration: none; color: inherit;">
+                        <div class="loading">
+                            <div class="spinner"></div>
+                        </div>
+                    </a>
+                </section>
+
+                <!-- Important Counts -->
+                <section class="rail-section">
+                    <div class="section-header">
+                        <span class="section-title">Overview</span>
+                    </div>
+                    <div class="counts-grid" id="counts-grid">
+                        <div class="count-card">
+                            <div class="count-value">—</div>
+                            <div class="count-label">Emails</div>
+                        </div>
+                        <div class="count-card">
+                            <div class="count-value">—</div>
+                            <div class="count-label">Issues</div>
+                        </div>
+                        <div class="count-card">
+                            <div class="count-value">—</div>
+                            <div class="count-label">Actions</div>
+                        </div>
+                    </div>
+                </section>
+            </aside>
+
+            <!-- Right Column: Details & Analytics -->
+            <div class="right-column">
+                <div class="content-grid">
+                    <!-- Weather Detail Card -->
+                    <div class="card" id="weather-card">
+                        <div class="card-header">
+                            <div class="card-header-left">
+                                <div class="card-icon">🌤️</div>
+                                <span class="card-title">Weather</span>
+                            </div>
+                            <a href="/weather" class="btn">View Report →</a>
+                        </div>
+                        <div class="card-body" id="weather-detail">
+                            <div class="loading">
+                                <div class="spinner"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Daily Report Card -->
+                    <div class="card" id="daily-card">
+                        <div class="card-header">
+                            <div class="card-header-left">
+                                <div class="card-icon">📅</div>
+                                <span class="card-title">Daily Report</span>
+                            </div>
+                            <span class="card-badge">Daily</span>
+                        </div>
+                        <div class="card-body" id="daily-detail">
+                            <div class="loading">
+                                <div class="spinner"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Site Analytics Card -->
+                    <div class="card" id="site-card">
+                        <div class="card-header">
+                            <div class="card-header-left">
+                                <div class="card-icon">📊</div>
+                                <span class="card-title">MaxsComputers.com</span>
+                            </div>
+                        </div>
+                        <div class="card-body" id="site-content">
+                            <div class="loading">
+                                <div class="spinner"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Recent Activity Card -->
+                    <div class="card" id="logs-card">
+                        <div class="card-header">
+                            <div class="card-header-left">
+                                <div class="card-icon">📋</div>
+                                <span class="card-title">Recent Activity</span>
+                            </div>
+                        </div>
+                        <div class="card-body" id="logs-content">
+                            <div class="loading">
+                                <div class="spinner"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>Compass v0.2.0 — <a href="/api/reports">API</a> — <a href="/docs">Docs</a></p>
+        </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

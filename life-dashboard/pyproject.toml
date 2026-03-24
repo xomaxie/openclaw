@@ -1,0 +1,30 @@
+[project]
+name = "life-dashboard"
+version = "0.1.0"
+description = "Max's Life Dashboard — central hub for weather, site analytics, email, and GitHub reports"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.0.0",
+    "structlog>=25.0.0",
+    "typer>=0.15.0",
+    "click>=8.0.0",
+    "python-dotenv>=1.0.0",
+    "mcp>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff"]
+
+[project.scripts]
+life-dashboard = "life_dashboard.cli:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio-mode = "auto"
