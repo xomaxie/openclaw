@@ -1809,6 +1809,34 @@ export const GENERATED_BASE_CONFIG_SCHEMA = {
                   additionalProperties: false,
                 },
               },
+              authRotation: {
+                type: "object",
+                properties: {
+                  openaiCodex: {
+                    type: "object",
+                    properties: {
+                      command: {
+                        type: "string",
+                        minLength: 1,
+                      },
+                      args: {
+                        type: "array",
+                        items: {
+                          type: "string",
+                        },
+                      },
+                      timeoutMs: {
+                        type: "integer",
+                        exclusiveMinimum: 0,
+                        maximum: 9007199254740991,
+                      },
+                    },
+                    required: ["command"],
+                    additionalProperties: false,
+                  },
+                },
+                additionalProperties: false,
+              },
               memorySearch: {
                 type: "object",
                 properties: {

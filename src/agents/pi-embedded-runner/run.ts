@@ -11,6 +11,7 @@ import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { prepareProviderRuntimeAuth } from "../../plugins/provider-runtime.js";
 import type { PluginHookBeforeAgentStartResult } from "../../plugins/types.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
+import { runCommandWithTimeout } from "../../process/exec.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
 import { resolveOpenClawAgentDir } from "../agent-paths.js";
 import { hasConfiguredModelFallbacks } from "../agent-scope.js";
@@ -21,7 +22,9 @@ import {
   markAuthProfileGood,
   markAuthProfileUsed,
   resolveProfilesUnavailableReason,
+  saveAuthProfileStore,
 } from "../auth-profiles.js";
+import { syncExternalCliCredentials } from "../auth-profiles/external-cli-sync.js";
 import {
   CONTEXT_WINDOW_HARD_MIN_TOKENS,
   CONTEXT_WINDOW_WARN_BELOW_TOKENS,
@@ -104,6 +107,14 @@ const OVERLOAD_FAILOVER_BACKOFF_POLICY: BackoffPolicy = {
   factor: 2,
   jitter: 0.2,
 };
+const OPENAI_CODEX_BROKER_ROTATION_REASONS = new Set<FailoverReason>([
+  "auth",
+  "auth_permanent",
+  "billing",
+  "rate_limit",
+  "timeout",
+]);
+const OPENAI_CODEX_MAX_BROKER_ROTATION_ATTEMPTS = 4;
 
 // Avoid Anthropic's refusal test token poisoning session transcripts.
 const ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL = "ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL";
@@ -307,6 +318,7 @@ export async function runEmbeddedPiAgent(
         workspaceDir: resolvedWorkspace,
         allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
       });
+      const prevCwd = process.cwd();
 
       let provider = (params.provider ?? DEFAULT_PROVIDER).trim() || DEFAULT_PROVIDER;
       let modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
@@ -825,6 +837,7 @@ export async function runEmbeddedPiAgent(
       let autoCompactionCount = 0;
       let runLoopIterations = 0;
       let overloadFailoverAttempts = 0;
+      let openAICodexBrokerRotationAttempts = 0;
       const maybeMarkAuthProfileFailure = async (failure: {
         profileId?: string;
         reason?: AuthProfileFailureReason | null;
@@ -853,6 +866,68 @@ export async function runEmbeddedPiAgent(
           return null;
         }
         return failoverReason;
+      };
+      const maybeRotateOpenAICodexBroker = async (
+        reason: FailoverReason | null | undefined,
+      ): Promise<boolean> => {
+        if (normalizeProviderId(provider) !== "openai-codex") {
+          return false;
+        }
+        if (!reason || !OPENAI_CODEX_BROKER_ROTATION_REASONS.has(reason)) {
+          return false;
+        }
+        if (openAICodexBrokerRotationAttempts >= OPENAI_CODEX_MAX_BROKER_ROTATION_ATTEMPTS) {
+          return false;
+        }
+        const rotationCfg = params.config?.agents?.defaults?.authRotation?.openaiCodex;
+        if (!rotationCfg?.command) {
+          return false;
+        }
+        openAICodexBrokerRotationAttempts += 1;
+        const rotationAttempt = openAICodexBrokerRotationAttempts;
+        try {
+          const result = await runCommandWithTimeout(
+            [rotationCfg.command, ...(rotationCfg.args ?? [])],
+            {
+              timeoutMs: rotationCfg.timeoutMs ?? 30_000,
+              cwd: resolvedWorkspace,
+            },
+          );
+          if (result.code !== 0 || result.termination !== "exit") {
+            log.warn(
+              `openai-codex broker rotation failed for ${provider}/${modelId} ` +
+                `(attempt ${rotationAttempt}/${OPENAI_CODEX_MAX_BROKER_ROTATION_ATTEMPTS}): ` +
+                `code=${result.code ?? "null"} termination=${result.termination}`,
+            );
+            return false;
+          }
+          const synced = syncExternalCliCredentials(authStore, {
+            forceRefreshProviders: ["openai-codex"],
+            log: true,
+          });
+          if (!synced) {
+            log.warn(
+              `openai-codex broker rotation completed but no fresh credentials were found for ${provider}/${modelId} ` +
+                `(attempt ${rotationAttempt}/${OPENAI_CODEX_MAX_BROKER_ROTATION_ATTEMPTS})`,
+            );
+            return false;
+          }
+          saveAuthProfileStore(authStore, agentDir);
+          await applyApiKeyInfo(lastProfileId);
+          thinkLevel = initialThinkLevel;
+          attemptedThinking.clear();
+          log.info(
+            `openai-codex broker rotation succeeded for ${provider}/${modelId} ` +
+              `(attempt ${rotationAttempt}/${OPENAI_CODEX_MAX_BROKER_ROTATION_ATTEMPTS}); retrying`,
+          );
+          return true;
+        } catch (err) {
+          log.warn(
+            `openai-codex broker rotation threw for ${provider}/${modelId} ` +
+              `(attempt ${rotationAttempt}/${OPENAI_CODEX_MAX_BROKER_ROTATION_ATTEMPTS}): ${describeUnknownError(err)}`,
+          );
+          return false;
+        }
       };
       const maybeBackoffBeforeOverloadFailover = async (reason: FailoverReason | null) => {
         if (reason !== "overloaded") {
@@ -958,7 +1033,6 @@ export async function runEmbeddedPiAgent(
             skillsSnapshot: params.skillsSnapshot,
             prompt,
             images: params.images,
-            clientTools: params.clientTools,
             disableTools: params.disableTools,
             provider,
             modelId,
@@ -1395,6 +1469,9 @@ export async function runEmbeddedPiAgent(
             });
             const promptFailoverFailure =
               promptFailoverReason !== null || isFailoverErrorMessage(errorText);
+            if (await maybeRotateOpenAICodexBroker(promptFailoverReason)) {
+              continue;
+            }
             // Capture the failing profile before auth-profile rotation mutates `lastProfileId`.
             const failedPromptProfileId = lastProfileId;
             const logPromptFailoverDecision = createFailoverDecisionLogger({
@@ -1542,6 +1619,13 @@ export async function runEmbeddedPiAgent(
                   `Profile ${lastProfileId} hit Cloud Code Assist format error. Tool calls will be sanitized on retry.`,
                 );
               }
+            }
+
+            if (
+              await maybeRotateOpenAICodexBroker(timedOut ? "timeout" : assistantFailoverReason)
+            ) {
+              logAssistantFailoverDecision("rotate_profile");
+              continue;
             }
 
             const rotated = await advanceAuthProfile();
@@ -1710,6 +1794,7 @@ export async function runEmbeddedPiAgent(
       } finally {
         await contextEngine.dispose?.();
         stopRuntimeAuthRefreshTimer();
+        process.chdir(prevCwd);
       }
     }),
   );

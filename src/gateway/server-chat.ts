@@ -4,6 +4,7 @@ import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import { loadConfig } from "../config/config.js";
 import { type AgentEventPayload, getAgentRunContext } from "../infra/agent-events.js";
 import { resolveHeartbeatVisibility } from "../infra/heartbeat-visibility.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { stripInlineDirectiveTagsForDisplay } from "../utils/directive-tags.js";
 import {
   deriveGatewaySessionLifecycleSnapshot,
@@ -11,6 +12,8 @@ import {
 } from "./session-lifecycle-state.js";
 import { loadGatewaySessionRow, loadSessionEntry } from "./session-utils.js";
 import { formatForLog } from "./ws-log.js";
+
+const log = createSubsystemLogger("gateway/chat");
 
 function resolveHeartbeatAckMaxChars(): number {
   try {
@@ -91,6 +94,25 @@ function isSilentReplyLeadFragment(text: string): boolean {
     return false;
   }
   return SILENT_REPLY_TOKEN.startsWith(normalized);
+}
+
+const AUTH_REFRESH_CHAT_ERROR_RE =
+  /oauth token refresh failed|failed to refresh oauth token|authentication token has been invalidated|try signing in again|try again or re-authenticate/i;
+
+function extractErrorText(error: unknown): string {
+  if (typeof error === "string") {
+    return error;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") {
+      return message;
+    }
+  }
+  return "";
 }
 
 function appendUniqueSuffix(base: string, suffix: string): string {
@@ -566,6 +588,31 @@ export function createAgentEventHandler({
     return { text, shouldSuppressSilent };
   };
 
+  const clearBufferedChatState = (clientRunId: string) => {
+    chatRunState.deltaLastBroadcastLen.delete(clientRunId);
+    chatRunState.buffers.delete(clientRunId);
+    chatRunState.deltaSentAt.delete(clientRunId);
+  };
+
+  const shouldSuppressAuthRefreshLifecycleChatError = (params: {
+    chatLinked: boolean;
+    clientRunId: string;
+    sourceRunId: string;
+    error?: unknown;
+  }) => {
+    if (params.chatLinked) {
+      return false;
+    }
+    const { text, shouldSuppressSilent } = resolveBufferedChatTextState(
+      params.clientRunId,
+      params.sourceRunId,
+    );
+    if (text && !shouldSuppressSilent && !isSilentReplyLeadFragment(text)) {
+      return false;
+    }
+    return AUTH_REFRESH_CHAT_ERROR_RE.test(extractErrorText(params.error));
+  };
+
   const flushBufferedChatDeltaIfNeeded = (
     sessionKey: string,
     clientRunId: string,
@@ -625,9 +672,7 @@ export function createAgentEventHandler({
     // suppressed the most recent chunk, leaving the client with stale text.
     // Only flush if the buffer has grown since the last broadcast to avoid duplicates.
     flushBufferedChatDeltaIfNeeded(sessionKey, clientRunId, sourceRunId, seq);
-    chatRunState.deltaLastBroadcastLen.delete(clientRunId);
-    chatRunState.buffers.delete(clientRunId);
-    chatRunState.deltaSentAt.delete(clientRunId);
+    clearBufferedChatState(clientRunId);
     if (jobState === "done") {
       const payload = {
         runId: clientRunId,
@@ -768,31 +813,55 @@ export function createAgentEventHandler({
       } else if (!isAborted && (lifecyclePhase === "end" || lifecyclePhase === "error")) {
         const evtStopReason =
           typeof evt.data?.stopReason === "string" ? evt.data.stopReason : undefined;
+        const shouldSuppressAuthRefreshError =
+          lifecyclePhase === "error" &&
+          shouldSuppressAuthRefreshLifecycleChatError({
+            chatLinked: Boolean(chatLink),
+            clientRunId,
+            sourceRunId: evt.runId,
+            error: evt.data?.error,
+          });
+        if (shouldSuppressAuthRefreshError) {
+          log.warn("suppressed background auth refresh lifecycle chat error", {
+            sessionKey,
+            clientRunId: eventRunId,
+            sourceRunId: evt.runId,
+            error: formatForLog(evt.data?.error),
+          });
+        }
         if (chatLink) {
           const finished = chatRunState.registry.shift(evt.runId);
           if (!finished) {
             clearAgentRunContext(evt.runId);
             return;
           }
-          emitChatFinal(
-            finished.sessionKey,
-            finished.clientRunId,
-            evt.runId,
-            evt.seq,
-            lifecyclePhase === "error" ? "error" : "done",
-            evt.data?.error,
-            evtStopReason,
-          );
+          if (shouldSuppressAuthRefreshError) {
+            clearBufferedChatState(finished.clientRunId);
+          } else {
+            emitChatFinal(
+              finished.sessionKey,
+              finished.clientRunId,
+              evt.runId,
+              evt.seq,
+              lifecyclePhase === "error" ? "error" : "done",
+              evt.data?.error,
+              evtStopReason,
+            );
+          }
         } else {
-          emitChatFinal(
-            sessionKey,
-            eventRunId,
-            evt.runId,
-            evt.seq,
-            lifecyclePhase === "error" ? "error" : "done",
-            evt.data?.error,
-            evtStopReason,
-          );
+          if (shouldSuppressAuthRefreshError) {
+            clearBufferedChatState(eventRunId);
+          } else {
+            emitChatFinal(
+              sessionKey,
+              eventRunId,
+              evt.runId,
+              evt.seq,
+              lifecyclePhase === "error" ? "error" : "done",
+              evt.data?.error,
+              evtStopReason,
+            );
+          }
         }
       } else if (isAborted && (lifecyclePhase === "end" || lifecyclePhase === "error")) {
         chatRunState.abortedRuns.delete(clientRunId);

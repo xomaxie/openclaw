@@ -860,6 +860,62 @@ describe("agent event handler", () => {
     expect(chatBroadcastCalls(broadcast)).toHaveLength(0);
     expect(nodeSendToSession).not.toHaveBeenCalled();
   });
+  it("suppresses auth-refresh lifecycle chat errors for non-chat-linked runs with no reply text", () => {
+    const { broadcast, nodeSendToSession, handler } = createHarness({
+      resolveSessionKeyForRun: () => "session-auth-hidden",
+    });
+    registerAgentRunContext("run-auth-hidden", {
+      sessionKey: "session-auth-hidden",
+      verboseLevel: "off",
+    });
+
+    handler({
+      runId: "run-auth-hidden",
+      seq: 1,
+      stream: "lifecycle",
+      ts: Date.now(),
+      data: {
+        phase: "error",
+        error:
+          "OAuth token refresh failed for openai-codex: Failed to refresh OAuth token for openai-codex. Please try again or re-authenticate.",
+      },
+    });
+
+    expect(chatBroadcastCalls(broadcast)).toHaveLength(0);
+    expect(sessionChatCalls(nodeSendToSession)).toHaveLength(0);
+    const agentPayload = expectSingleAgentBroadcastPayload(broadcast);
+    expect(agentPayload.stream).toBe("lifecycle");
+    expect(agentPayload.data?.phase).toBe("error");
+  });
+
+  it("keeps lifecycle chat errors for chat-linked runs", () => {
+    const { broadcast, nodeSendToSession, chatRunState, handler } = createHarness({
+      resolveSessionKeyForRun: () => "session-auth-linked",
+    });
+    chatRunState.registry.add("run-auth-linked", {
+      sessionKey: "session-auth-linked",
+      clientRunId: "client-auth-linked",
+    });
+
+    handler({
+      runId: "run-auth-linked",
+      seq: 1,
+      stream: "lifecycle",
+      ts: Date.now(),
+      data: {
+        phase: "error",
+        error:
+          "OAuth token refresh failed for openai-codex: Failed to refresh OAuth token for openai-codex. Please try again or re-authenticate.",
+      },
+    });
+
+    const chatCalls = chatBroadcastCalls(broadcast);
+    expect(chatCalls).toHaveLength(1);
+    const payload = chatCalls[0]?.[1] as { state?: string; runId?: string };
+    expect(payload.state).toBe("error");
+    expect(payload.runId).toBe("client-auth-linked");
+    expect(sessionChatCalls(nodeSendToSession)).toHaveLength(1);
+  });
 
   it("uses agent event sessionKey when run-context lookup cannot resolve", () => {
     const { broadcast, handler } = createHarness({

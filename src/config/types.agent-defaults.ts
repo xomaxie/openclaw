@@ -117,6 +117,15 @@ export type CliBackendConfig = {
   };
 };
 
+export type ExternalAuthRotationCommandConfig = {
+  /** CLI command to execute (absolute path or on PATH). */
+  command: string;
+  /** Args passed to the rotator command. */
+  args?: string[];
+  /** Max command runtime in ms (default: 30000). */
+  timeoutMs?: number;
+};
+
 export type AgentDefaultsConfig = {
   /** Primary model and fallbacks (provider/model). Accepts string or {primary,fallbacks}. */
   model?: AgentModelConfig;
@@ -169,6 +178,11 @@ export type AgentDefaultsConfig = {
   contextTokens?: number;
   /** Optional CLI backends for text-only fallback (claude-cli, etc.). */
   cliBackends?: Record<string, CliBackendConfig>;
+  /** Optional external credential rotation hooks for single-profile OAuth providers. */
+  authRotation?: {
+    /** External broker rotation command used when openai-codex credentials exhaust mid-run. */
+    openaiCodex?: ExternalAuthRotationCommandConfig;
+  };
   /** Opt-in: prune old tool results from the LLM context to reduce token usage. */
   contextPruning?: AgentContextPruningConfig;
   /** Compaction tuning and pre-compaction memory flush behavior. */

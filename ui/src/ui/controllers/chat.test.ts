@@ -1,4 +1,12 @@
+import fs from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+
+describe("chat controller browser boundary", () => {
+  it("does not import server-side auto-reply tokens into the UI bundle", () => {
+    const source = fs.readFileSync(new URL("./chat.ts", import.meta.url), "utf8");
+    expect(source).not.toContain("../../../../src/auto-reply/tokens.js");
+  });
+});
 import { GatewayRequestError } from "../gateway.ts";
 import {
   abortChatRun,
@@ -94,11 +102,12 @@ describe("handleChatEvent", () => {
         content: [{ type: "text", text: "Sub-agent findings" }],
       },
     };
-    expect(handleChatEvent(state, payload)).toBe(null);
+    expect(handleChatEvent(state, payload)).toBe("final");
     expect(state.chatRunId).toBe("run-user");
     expect(state.chatStream).toBe("Working...");
     expect(state.chatStreamStartedAt).toBe(123);
     expect(state.chatMessages).toHaveLength(1);
+    expect(state.lastError).toBeNull();
     expect(state.chatMessages[0]).toEqual(payload.message);
   });
 
@@ -108,6 +117,7 @@ describe("handleChatEvent", () => {
       chatRunId: "run-user",
       chatStream: "Working...",
       chatStreamStartedAt: 123,
+      lastError: "API rate limit reached. Please try again later.",
     });
     const payload: ChatEventPayload = {
       runId: "run-announce",
@@ -123,6 +133,7 @@ describe("handleChatEvent", () => {
     expect(state.chatRunId).toBe("run-user");
     expect(state.chatStream).toBe("Working...");
     expect(state.chatStreamStartedAt).toBe(123);
+    expect(state.lastError).toBeNull();
     expect(state.chatMessages).toEqual([]);
   });
 
@@ -373,6 +384,31 @@ describe("handleChatEvent", () => {
     expect(state.chatStream).toBe(null);
     expect(state.chatStreamStartedAt).toBe(null);
     expect(state.chatMessages).toEqual([existingMessage]);
+  });
+
+  it("clears stale error when another run finishes with a visible assistant reply", () => {
+    const state = createState({
+      sessionKey: "main",
+      chatRunId: "run-user",
+      chatStream: "Working...",
+      chatStreamStartedAt: 123,
+      lastError: "⚠️ API rate limit reached. Please try again later.",
+    });
+    const payload: ChatEventPayload = {
+      runId: "run-announce",
+      sessionKey: "main",
+      state: "final",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Recovered reply" }],
+      },
+    };
+
+    expect(handleChatEvent(state, payload)).toBe("final");
+    expect(state.lastError).toBeNull();
+    expect(state.chatRunId).toBe("run-user");
+    expect(state.chatStream).toBe("Working...");
+    expect(state.chatMessages).toEqual([payload.message]);
   });
 
   it("drops NO_REPLY final payload from another run", () => {

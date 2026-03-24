@@ -128,6 +128,16 @@ function resolveCodexCliAuthPath() {
   return path.join(resolveCodexHomePath(), CODEX_CLI_AUTH_FILENAME);
 }
 
+function resolveCodexCliCacheKey(platform?: NodeJS.Platform): string {
+  const authPath = resolveCodexCliAuthPath();
+  try {
+    const stat = fs.statSync(authPath);
+    return `${platform ?? process.platform}|${authPath}|${stat.mtimeMs}|${stat.size}`;
+  } catch {
+    return `${platform ?? process.platform}|${authPath}|missing`;
+  }
+}
+
 function resolveCodexHomePath() {
   const configured = process.env.CODEX_HOME;
   const home = configured ? resolveUserPath(configured) : resolveUserPath("~/.codex");
@@ -136,6 +146,35 @@ function resolveCodexHomePath() {
   } catch {
     return home;
   }
+}
+
+function decodeJwtExpiryMs(token: string): number | null {
+  const parts = token.split(".");
+  if (parts.length < 2) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8")) as {
+      exp?: unknown;
+    };
+    const exp = payload.exp;
+    if (typeof exp === "number" && Number.isFinite(exp) && exp > 0) {
+      return exp * 1000;
+    }
+    if (typeof exp === "string") {
+      const parsed = Number(exp);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed * 1000;
+      }
+    }
+  } catch {
+    // Ignore malformed JWT payloads and fall back to heuristic expiry.
+  }
+  return null;
+}
+
+function resolveCodexCredentialExpiryMs(accessToken: string, fallbackMs: number): number {
+  return decodeJwtExpiryMs(accessToken) ?? fallbackMs;
 }
 
 function resolveQwenCliCredentialsPath(homeDir?: string) {
@@ -151,22 +190,6 @@ function resolveMiniMaxCliCredentialsPath(homeDir?: string) {
 function computeCodexKeychainAccount(codexHome: string) {
   const hash = createHash("sha256").update(codexHome).digest("hex");
   return `cli|${hash.slice(0, 16)}`;
-}
-
-function decodeJwtExpiryMs(token: string): number | null {
-  const parts = token.split(".");
-  if (parts.length < 2) {
-    return null;
-  }
-  try {
-    const payloadRaw = Buffer.from(parts[1], "base64url").toString("utf8");
-    const payload = JSON.parse(payloadRaw) as { exp?: unknown };
-    return typeof payload.exp === "number" && Number.isFinite(payload.exp) && payload.exp > 0
-      ? payload.exp * 1000
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 function readCodexKeychainCredentials(options?: {
@@ -209,10 +232,10 @@ function readCodexKeychainCredentials(options?: {
       typeof lastRefreshRaw === "string" || typeof lastRefreshRaw === "number"
         ? new Date(lastRefreshRaw).getTime()
         : Date.now();
-    const fallbackExpiry = Number.isFinite(lastRefresh)
+    const fallbackExpires = Number.isFinite(lastRefresh)
       ? lastRefresh + 60 * 60 * 1000
       : Date.now() + 60 * 60 * 1000;
-    const expires = decodeJwtExpiryMs(accessToken) ?? fallbackExpiry;
+    const expires = resolveCodexCredentialExpiryMs(accessToken, fallbackExpires);
     const accountId = typeof tokens?.account_id === "string" ? tokens.account_id : undefined;
 
     log.info("read codex credentials from keychain", {
@@ -500,14 +523,14 @@ export function readCodexCliCredentials(options?: {
     return null;
   }
 
-  let fallbackExpiry: number;
+  let fallbackExpires: number;
   try {
     const stat = fs.statSync(authPath);
-    fallbackExpiry = stat.mtimeMs + 60 * 60 * 1000;
+    fallbackExpires = stat.mtimeMs + 60 * 60 * 1000;
   } catch {
-    fallbackExpiry = Date.now() + 60 * 60 * 1000;
+    fallbackExpires = Date.now() + 60 * 60 * 1000;
   }
-  const expires = decodeJwtExpiryMs(accessToken) ?? fallbackExpiry;
+  const expires = resolveCodexCredentialExpiryMs(accessToken, fallbackExpires);
 
   return {
     type: "oauth",
@@ -526,7 +549,7 @@ export function readCodexCliCredentialsCached(options?: {
 }): CodexCliCredential | null {
   const ttlMs = options?.ttlMs ?? 0;
   const now = Date.now();
-  const cacheKey = `${options?.platform ?? process.platform}|${resolveCodexCliAuthPath()}`;
+  const cacheKey = resolveCodexCliCacheKey(options?.platform);
   if (
     ttlMs > 0 &&
     codexCliCache &&

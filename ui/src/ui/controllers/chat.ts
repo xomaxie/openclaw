@@ -9,27 +9,21 @@ import {
   isMissingOperatorReadScopeError,
 } from "./scope-errors.ts";
 
+const SILENT_REPLY_TOKEN = "NO_REPLY";
 const SILENT_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
 
-function isSilentReplyStream(text: string): boolean {
-  return SILENT_REPLY_PATTERN.test(text);
-}
-/** Client-side defense-in-depth: detect assistant messages whose text is purely NO_REPLY. */
-function isAssistantSilentReply(message: unknown): boolean {
-  if (!message || typeof message !== "object") {
+function isSilentReplyText(
+  value: string | null | undefined,
+  sentinel = SILENT_REPLY_TOKEN,
+): boolean {
+  if (typeof value !== "string") {
     return false;
   }
-  const entry = message as Record<string, unknown>;
-  const role = typeof entry.role === "string" ? entry.role.toLowerCase() : "";
-  if (role !== "assistant") {
-    return false;
+  if (sentinel === SILENT_REPLY_TOKEN) {
+    return SILENT_REPLY_PATTERN.test(value);
   }
-  // entry.text takes precedence — matches gateway extractAssistantTextForSilentCheck
-  if (typeof entry.text === "string") {
-    return isSilentReplyStream(entry.text);
-  }
-  const text = extractText(message);
-  return typeof text === "string" && isSilentReplyStream(text);
+  const escaped = sentinel.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&");
+  return new RegExp(`^\\s*${escaped}\\s*$`).test(value);
 }
 
 export type ChatState = {
@@ -56,7 +50,7 @@ export type ChatEventPayload = {
   errorMessage?: string;
 };
 
-function maybeResetToolStream(state: ChatState) {
+function maybeResetToolStream(state: ChatState): void {
   const toolHost = state as ChatState & Partial<Parameters<typeof resetToolStream>[0]>;
   if (
     toolHost.toolStreamById instanceof Map &&
@@ -66,6 +60,62 @@ function maybeResetToolStream(state: ChatState) {
   ) {
     resetToolStream(toolHost as Parameters<typeof resetToolStream>[0]);
   }
+}
+
+function extractAssistantTextForSilentCheck(message: unknown): string | undefined {
+  if (!message || typeof message !== "object") {
+    return undefined;
+  }
+  const entry = message as Record<string, unknown>;
+  if (entry.role !== "assistant") {
+    return undefined;
+  }
+  if (typeof entry.text === "string") {
+    return entry.text;
+  }
+  if (typeof entry.content === "string") {
+    return entry.content;
+  }
+  if (!Array.isArray(entry.content) || entry.content.length === 0) {
+    return undefined;
+  }
+
+  const texts: string[] = [];
+  for (const block of entry.content) {
+    if (!block || typeof block !== "object") {
+      return undefined;
+    }
+    const typed = block as { type?: unknown; text?: unknown };
+    if (typed.type !== "text" || typeof typed.text !== "string") {
+      return undefined;
+    }
+    texts.push(typed.text);
+  }
+  return texts.length > 0 ? texts.join("\n") : undefined;
+}
+
+function isSilentAssistantMessage(message: unknown): boolean {
+  const text = extractAssistantTextForSilentCheck(message);
+  return text !== undefined && isSilentReplyText(text, SILENT_REPLY_TOKEN);
+}
+
+function filterVisibleChatMessages(messages: unknown[]): unknown[] {
+  return messages.filter((message) => !isSilentAssistantMessage(message));
+}
+
+function appendVisibleStreamedAssistantMessage(state: ChatState): void {
+  const streamedText = state.chatStream ?? "";
+  if (!streamedText.trim() || isSilentReplyText(streamedText, SILENT_REPLY_TOKEN)) {
+    return;
+  }
+  state.chatMessages = [
+    ...state.chatMessages,
+    {
+      role: "assistant",
+      content: [{ type: "text", text: streamedText }],
+      timestamp: Date.now(),
+    },
+  ];
 }
 
 export async function loadChatHistory(state: ChatState) {
@@ -82,11 +132,8 @@ export async function loadChatHistory(state: ChatState) {
         limit: 200,
       },
     );
-    const messages = Array.isArray(res.messages) ? res.messages : [];
-    state.chatMessages = messages.filter((message) => !isAssistantSilentReply(message));
+    state.chatMessages = Array.isArray(res.messages) ? filterVisibleChatMessages(res.messages) : [];
     state.chatThinkingLevel = res.thinkingLevel ?? null;
-    // Clear all streaming state — history includes tool results and text
-    // inline, so keeping streaming artifacts would cause duplicates.
     maybeResetToolStream(state);
     state.chatStream = null;
     state.chatStreamStartedAt = null;
@@ -176,12 +223,10 @@ export async function sendChatMessage(
 
   const now = Date.now();
 
-  // Build user message content blocks
   const contentBlocks: Array<{ type: string; text?: string; source?: unknown }> = [];
   if (msg) {
     contentBlocks.push({ type: "text", text: msg });
   }
-  // Add image previews to the message for display
   if (hasAttachments) {
     for (const att of attachments) {
       contentBlocks.push({
@@ -207,7 +252,6 @@ export async function sendChatMessage(
   state.chatStream = "";
   state.chatStreamStartedAt = now;
 
-  // Convert attachments to API format
   const apiAttachments = hasAttachments
     ? attachments
         .map((att) => {
@@ -278,61 +322,53 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
     return null;
   }
 
-  // Final from another run (e.g. sub-agent announce): refresh history to show new message.
-  // See https://github.com/openclaw/openclaw/issues/1909
   if (payload.runId && state.chatRunId && payload.runId !== state.chatRunId) {
     if (payload.state === "final") {
+      state.lastError = null;
       const finalMessage = normalizeFinalAssistantMessage(payload.message);
-      if (finalMessage && !isAssistantSilentReply(finalMessage)) {
+      if (finalMessage && !isSilentAssistantMessage(finalMessage)) {
         state.chatMessages = [...state.chatMessages, finalMessage];
-        return null;
       }
       return "final";
+    }
+    if (payload.state === "aborted") {
+      state.lastError = null;
+      const normalizedMessage = normalizeAbortedAssistantMessage(payload.message);
+      if (normalizedMessage && !isSilentAssistantMessage(normalizedMessage)) {
+        state.chatMessages = [...state.chatMessages, normalizedMessage];
+      }
+      return "aborted";
     }
     return null;
   }
 
   if (payload.state === "delta") {
+    state.lastError = null;
     const next = extractText(payload.message);
-    if (typeof next === "string" && !isSilentReplyStream(next)) {
+    if (typeof next === "string" && !isSilentReplyText(next, SILENT_REPLY_TOKEN)) {
       const current = state.chatStream ?? "";
       if (!current || next.length >= current.length) {
         state.chatStream = next;
       }
     }
   } else if (payload.state === "final") {
+    state.lastError = null;
     const finalMessage = normalizeFinalAssistantMessage(payload.message);
-    if (finalMessage && !isAssistantSilentReply(finalMessage)) {
+    if (finalMessage && !isSilentAssistantMessage(finalMessage)) {
       state.chatMessages = [...state.chatMessages, finalMessage];
-    } else if (state.chatStream?.trim() && !isSilentReplyStream(state.chatStream)) {
-      state.chatMessages = [
-        ...state.chatMessages,
-        {
-          role: "assistant",
-          content: [{ type: "text", text: state.chatStream }],
-          timestamp: Date.now(),
-        },
-      ];
+    } else if (!finalMessage) {
+      appendVisibleStreamedAssistantMessage(state);
     }
     state.chatStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;
   } else if (payload.state === "aborted") {
+    state.lastError = null;
     const normalizedMessage = normalizeAbortedAssistantMessage(payload.message);
-    if (normalizedMessage && !isAssistantSilentReply(normalizedMessage)) {
+    if (normalizedMessage && !isSilentAssistantMessage(normalizedMessage)) {
       state.chatMessages = [...state.chatMessages, normalizedMessage];
     } else {
-      const streamedText = state.chatStream ?? "";
-      if (streamedText.trim() && !isSilentReplyStream(streamedText)) {
-        state.chatMessages = [
-          ...state.chatMessages,
-          {
-            role: "assistant",
-            content: [{ type: "text", text: streamedText }],
-            timestamp: Date.now(),
-          },
-        ];
-      }
+      appendVisibleStreamedAssistantMessage(state);
     }
     state.chatStream = null;
     state.chatRunId = null;

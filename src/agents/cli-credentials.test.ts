@@ -7,6 +7,7 @@ const execSyncMock = vi.fn();
 const execFileSyncMock = vi.fn();
 const CLI_CREDENTIALS_CACHE_TTL_MS = 15 * 60 * 1000;
 let readClaudeCliCredentialsCached: typeof import("./cli-credentials.js").readClaudeCliCredentialsCached;
+let readCodexCliCredentialsCached: typeof import("./cli-credentials.js").readCodexCliCredentialsCached;
 let resetCliCredentialCachesForTest: typeof import("./cli-credentials.js").resetCliCredentialCachesForTest;
 let writeClaudeCliKeychainCredentials: typeof import("./cli-credentials.js").writeClaudeCliKeychainCredentials;
 let writeClaudeCliCredentials: typeof import("./cli-credentials.js").writeClaudeCliCredentials;
@@ -56,6 +57,7 @@ describe("cli credentials", () => {
   beforeAll(async () => {
     ({
       readClaudeCliCredentialsCached,
+      readCodexCliCredentialsCached,
       resetCliCredentialCachesForTest,
       writeClaudeCliKeychainCredentials,
       writeClaudeCliCredentials,
@@ -290,6 +292,119 @@ describe("cli credentials", () => {
       refresh: "file-refresh",
       provider: "openai-codex",
       expires: expSeconds * 1000,
+    });
+  });
+
+  it("uses the Codex access-token JWT expiry from auth.json instead of file mtime", () => {
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-codex-"));
+    process.env.CODEX_HOME = tempHome;
+    execSyncMock.mockImplementation(() => {
+      throw new Error("not found");
+    });
+
+    const authPath = path.join(tempHome, "auth.json");
+    fs.mkdirSync(tempHome, { recursive: true, mode: 0o700 });
+    const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({ exp: 1_900_000_000 })).toString("base64url");
+    const token = `${header}.${payload}.sig`;
+    fs.writeFileSync(
+      authPath,
+      JSON.stringify({
+        tokens: {
+          access_token: token,
+          refresh_token: "file-refresh",
+        },
+      }),
+      "utf8",
+    );
+    const mtime = new Date("2025-01-01T00:00:00.000Z");
+    fs.utimesSync(authPath, mtime, mtime);
+
+    const creds = readCodexCliCredentials({ execSync: execSyncMock });
+
+    expect(creds?.expires).toBe(1_900_000_000_000);
+  });
+
+  it("falls back to auth.json mtime when the Codex access token is malformed", () => {
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-codex-"));
+    process.env.CODEX_HOME = tempHome;
+    execSyncMock.mockImplementation(() => {
+      throw new Error("not found");
+    });
+
+    const authPath = path.join(tempHome, "auth.json");
+    fs.mkdirSync(tempHome, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(
+      authPath,
+      JSON.stringify({
+        tokens: {
+          access_token: "not-a-valid.jwt",
+          refresh_token: "file-refresh",
+        },
+      }),
+      "utf8",
+    );
+    const mtime = new Date("2025-01-01T00:00:00.000Z");
+    fs.utimesSync(authPath, mtime, mtime);
+
+    const creds = readCodexCliCredentials({ execSync: execSyncMock });
+
+    expect(creds?.expires).toBe(mtime.getTime() + 60 * 60 * 1000);
+  });
+
+  it("refreshes cached Codex auth.json credentials when the file changes within the TTL window", () => {
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-codex-"));
+    process.env.CODEX_HOME = tempHome;
+    execSyncMock.mockImplementation(() => {
+      throw new Error("not found");
+    });
+
+    const authPath = path.join(tempHome, "auth.json");
+    fs.mkdirSync(tempHome, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(
+      authPath,
+      JSON.stringify({
+        tokens: {
+          access_token: "file-access-1",
+          refresh_token: "file-refresh-1",
+        },
+      }),
+      "utf8",
+    );
+    const firstMtime = new Date("2025-01-01T00:00:00.000Z");
+    fs.utimesSync(authPath, firstMtime, firstMtime);
+
+    vi.setSystemTime(new Date("2025-01-01T00:05:00.000Z"));
+    const first = readCodexCliCredentialsCached({
+      ttlMs: CLI_CREDENTIALS_CACHE_TTL_MS,
+      execSync: execSyncMock,
+    });
+
+    fs.writeFileSync(
+      authPath,
+      JSON.stringify({
+        tokens: {
+          access_token: "file-access-2",
+          refresh_token: "file-refresh-2",
+        },
+      }),
+      "utf8",
+    );
+    const secondMtime = new Date("2025-01-01T00:05:01.000Z");
+    fs.utimesSync(authPath, secondMtime, secondMtime);
+
+    const second = readCodexCliCredentialsCached({
+      ttlMs: CLI_CREDENTIALS_CACHE_TTL_MS,
+      execSync: execSyncMock,
+    });
+
+    expect(first).toMatchObject({
+      access: "file-access-1",
+      refresh: "file-refresh-1",
+    });
+    expect(second).toMatchObject({
+      access: "file-access-2",
+      refresh: "file-refresh-2",
     });
   });
 });
