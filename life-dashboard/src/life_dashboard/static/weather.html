@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weather Report — Compass</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        /* Weather Report Page Specific Styles */
+        .weather-page {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .weather-container {
+            flex: 1;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: var(--space-xl);
+            width: 100%;
+        }
+        
+        .weather-header {
+            display: flex;
+            align-items: center;
+            gap: var(--space-md);
+            margin-bottom: var(--space-xl);
+            padding-bottom: var(--space-lg);
+            border-bottom: 1px solid var(--border-subtle);
+        }
+        
+        .weather-header-back {
+            display: inline-flex;
+            align-items: center;
+            gap: var(--space-xs);
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.875rem;
+            padding: var(--space-sm) var(--space-md);
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-sm);
+            transition: all 0.15s ease;
+        }
+        
+        .weather-header-back:hover {
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+        }
+        
+        .weather-header-title {
+            flex: 1;
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        
+        .weather-header-meta {
+            font-size: 0.875rem;
+            color: var(--text-tertiary);
+        }
+        
+        .weather-card {
+            background: var(--bg-secondary);
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border-subtle);
+            overflow: hidden;
+            margin-bottom: var(--space-lg);
+        }
+        
+        .weather-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: var(--space-md) var(--space-lg);
+            border-bottom: 1px solid var(--border-subtle);
+            background: var(--bg-tertiary);
+        }
+        
+        .weather-card-title {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: var(--space-sm);
+        }
+        
+        .weather-card-badge {
+            font-size: 0.75rem;
+            padding: var(--space-xs) var(--space-sm);
+            background: var(--bg-elevated);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+        }
+        
+        .weather-card-body {
+            padding: var(--space-lg);
+        }
+        
+        /* Current Conditions - Large Display */
+        .current-conditions {
+            display: flex;
+            align-items: center;
+            gap: var(--space-xl);
+            padding: var(--space-xl);
+            background: linear-gradient(135deg, rgba(184, 134, 11, 0.05) 0%, rgba(42, 157, 143, 0.05) 100%);
+            border-radius: var(--radius-md);
+            margin-bottom: var(--space-lg);
+        }
+        
+        .current-icon {
+            font-size: 5rem;
+            line-height: 1;
+        }
+        
+        .current-info {
+            flex: 1;
+        }
+        
+        .current-temp {
+            font-size: 4rem;
+            font-weight: 200;
+            line-height: 1;
+            letter-spacing: -0.02em;
+            color: var(--text-primary);
+        }
+        
+        .current-condition {
+            font-size: 1.25rem;
+            color: var(--text-secondary);
+            margin-top: var(--space-xs);
+        }
+        
+        .current-location {
+            font-size: 0.875rem;
+            color: var(--text-tertiary);
+            margin-top: var(--space-xs);
+        }
+        
+        /* Details Grid */
+        .details-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: var(--space-md);
+        }
+        
+        .detail-item {
+            text-align: center;
+            padding: var(--space-md);
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-sm);
+        }
+        
+        .detail-label {
+            font-size: 0.6875rem;
+            color: var(--text-tertiary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .detail-value {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-top: var(--space-xs);
+        }
+        
+        /* Alerts */
+        .alert-banner {
+            padding: var(--space-md) var(--space-lg);
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            border-radius: var(--radius-md);
+            margin-bottom: var(--space-md);
+        }
+        
+        .alert-banner.severity-minor {
+            background: rgba(96, 165, 250, 0.1);
+            border-color: rgba(96, 165, 250, 0.3);
+        }
+        
+        .alert-banner.severity-moderate {
+            background: rgba(245, 158, 11, 0.1);
+            border-color: rgba(245, 158, 11, 0.3);
+        }
+        
+        .alert-banner.severity-severe {
+            background: rgba(249, 115, 22, 0.15);
+            border-color: rgba(249, 115, 22, 0.4);
+        }
+        
+        .alert-banner.severity-extreme {
+            background: rgba(239, 68, 68, 0.15);
+            border-color: rgba(239, 68, 68, 0.5);
+            animation: pulse-border 2s ease-in-out infinite;
+        }
+        
+        .alert-title {
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: var(--space-xs);
+            display: flex;
+            align-items: center;
+            gap: var(--space-xs);
+        }
+        
+        .alert-description {
+            font-size: 0.9375rem;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+        
+        .alert-meta {
+            font-size: 0.75rem;
+            color: var(--text-tertiary);
+            margin-top: var(--space-sm);
+        }
+        
+        /* Narrative */
+        .narrative-content {
+            background: linear-gradient(135deg, rgba(42, 157, 143, 0.08) 0%, rgba(78, 205, 196, 0.04) 100%);
+            border-left: 3px solid var(--accent-teal);
+            padding: var(--space-lg);
+            border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+        }
+
+        /* TTS / audio */
+        .tts-controls {
+            display: flex;
+            align-items: center;
+            gap: var(--space-sm);
+            flex-wrap: wrap;
+            margin-bottom: var(--space-md);
+        }
+
+        .tts-button {
+            display: inline-flex;
+            align-items: center;
+            gap: var(--space-xs);
+            padding: var(--space-sm) var(--space-md);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-sm);
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            cursor: pointer;
+            font: inherit;
+        }
+
+        .tts-button:hover {
+            background: var(--bg-elevated);
+        }
+
+        .tts-button:disabled {
+            opacity: 0.6;
+            cursor: wait;
+        }
+
+        .tts-status {
+            font-size: 0.8125rem;
+            color: var(--text-tertiary);
+        }
+
+        .tts-audio {
+            width: 100%;
+            margin-bottom: var(--space-md);
+        }
+
+        .tts-script {
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-sm);
+            padding: var(--space-md);
+            font-size: 0.9375rem;
+            line-height: 1.65;
+            color: var(--text-secondary);
+            white-space: pre-wrap;
+        }
+        
+        .narrative-section-title {
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--accent-teal);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: var(--space-sm);
+        }
+        
+        .narrative-section-text {
+            font-size: 0.9375rem;
+            line-height: 1.7;
+            color: var(--text-secondary);
+            margin-bottom: var(--space-lg);
+        }
+        
+        .narrative-section-text:last-child {
+            margin-bottom: 0;
+        }
+        
+        /* Forecast */
+        .forecast-grid {
+            display: flex;
+            gap: var(--space-md);
+            overflow-x: auto;
+            padding-bottom: var(--space-xs);
+        }
+        
+        .forecast-day-card {
+            flex: 1;
+            min-width: 100px;
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-md);
+            padding: var(--space-lg);
+            text-align: center;
+        }
+        
+        .forecast-day-name {
+            font-size: 0.75rem;
+            color: var(--text-tertiary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: var(--space-sm);
+        }
+        
+        .forecast-day-icon {
+            font-size: 2rem;
+            margin: var(--space-sm) 0;
+        }
+        
+        .forecast-day-temps {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        
+        .forecast-day-condition {
+            font-size: 0.8125rem;
+            color: var(--text-secondary);
+            margin-top: var(--space-xs);
+        }
+        
+        .forecast-day-precip {
+            font-size: 0.75rem;
+            color: var(--accent-cyan);
+            margin-top: var(--space-xs);
+        }
+        
+        /* Hourly */
+        .hourly-grid {
+            display: flex;
+            gap: var(--space-xs);
+            overflow-x: auto;
+            padding-bottom: var(--space-xs);
+        }
+        
+        .hourly-card {
+            min-width: 70px;
+            text-align: center;
+            padding: var(--space-md) var(--space-sm);
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-sm);
+        }
+        
+        .hourly-time {
+            font-size: 0.75rem;
+            color: var(--text-tertiary);
+        }
+        
+        .hourly-icon {
+            font-size: 1.5rem;
+            margin: var(--space-xs) 0;
+        }
+        
+        .hourly-temp {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        
+        .hourly-precip {
+            font-size: 0.625rem;
+            color: var(--accent-cyan);
+        }
+        
+        /* Sources */
+        .sources-grid {
+            display: flex;
+            gap: var(--space-sm);
+            flex-wrap: wrap;
+        }
+        
+        .source-pill {
+            font-size: 0.8125rem;
+            padding: var(--space-sm) var(--space-md);
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: var(--space-xs);
+        }
+        
+        .source-pill.confidence-high {
+            border: 1px solid var(--success);
+        }
+        
+        .source-pill.confidence-medium {
+            border: 1px solid var(--warning);
+        }
+        
+        .source-confidence {
+            font-size: 0.625rem;
+            text-transform: uppercase;
+            padding: 2px 6px;
+            border-radius: 3px;
+            background: var(--bg-elevated);
+        }
+        
+        /* Freshness */
+        .freshness-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: var(--space-md) var(--space-lg);
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-sm);
+            font-size: 0.875rem;
+        }
+        
+        .freshness-indicator {
+            display: flex;
+            align-items: center;
+            gap: var(--space-xs);
+        }
+        
+        .freshness-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+        }
+        
+        .freshness-dot.stale {
+            background: var(--warning);
+        }
+        
+        .freshness-dot.old {
+            background: var(--danger);
+        }
+        
+        /* Error State */
+        .error-state {
+            text-align: center;
+            padding: var(--space-2xl);
+            background: var(--bg-secondary);
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border-subtle);
+        }
+        
+        .error-state-icon {
+            font-size: 4rem;
+            margin-bottom: var(--space-md);
+        }
+        
+        .error-state-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: var(--space-sm);
+        }
+        
+        .error-state-text {
+            font-size: 0.9375rem;
+            color: var(--text-secondary);
+            margin-bottom: var(--space-lg);
+        }
+        
+        /* PWS Section */
+        .pws-consensus-box {
+            background: var(--bg-tertiary);
+            padding: var(--space-md);
+            border-radius: var(--radius-sm);
+            margin-bottom: var(--space-md);
+        }
+        
+        .pws-consensus-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: var(--space-sm);
+        }
+        
+        .pws-consensus-title {
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+        
+        .pws-confidence-badge {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            padding: var(--space-xs) var(--space-sm);
+            border-radius: var(--radius-sm);
+            background: var(--bg-elevated);
+        }
+        
+        .pws-confidence-high {
+            background: rgba(34, 197, 94, 0.2);
+            color: var(--success);
+        }
+        
+        .pws-confidence-medium {
+            background: rgba(245, 158, 11, 0.2);
+            color: var(--warning);
+        }
+        
+        .pws-confidence-low {
+            background: rgba(249, 115, 22, 0.2);
+            color: var(--danger);
+        }
+        
+        .pws-stations-row {
+            display: flex;
+            gap: var(--space-sm);
+            overflow-x: auto;
+            padding-bottom: var(--space-xs);
+        }
+        
+        .pws-station-card {
+            min-width: 140px;
+            background: var(--bg-tertiary);
+            padding: var(--space-md);
+            border-radius: var(--radius-sm);
+            border-left: 3px solid var(--success);
+        }
+        
+        .pws-station-card.fresh {
+            border-left-color: var(--success);
+        }
+        
+        .pws-station-card.recent {
+            border-left-color: var(--warning);
+        }
+        
+        .pws-station-card.stale {
+            border-left-color: var(--danger);
+        }
+        
+        .pws-station-name {
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .pws-station-meta {
+            font-size: 0.6875rem;
+            color: var(--text-tertiary);
+            margin-bottom: var(--space-sm);
+        }
+        
+        .pws-station-temp {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        
+        .pws-station-humidity {
+            font-size: 0.6875rem;
+            color: var(--text-secondary);
+        }
+
+        /* METAR / Official Aviation Observations */
+        .metar-stations-row {
+            display: flex;
+            gap: var(--space-sm);
+            overflow-x: auto;
+            padding-bottom: var(--space-xs);
+            margin-bottom: var(--space-md);
+        }
+
+        .metar-station-card {
+            min-width: 160px;
+            background: var(--bg-tertiary);
+            padding: var(--space-md);
+            border-radius: var(--radius-sm);
+            border-top: 3px solid var(--success);
+        }
+
+        .metar-station-card.fresh {
+            border-top-color: var(--success);
+        }
+
+        .metar-station-card.recent {
+            border-top-color: var(--warning);
+        }
+
+        .metar-station-card.stale {
+            border-top-color: var(--danger);
+        }
+
+        .metar-station-name {
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 2px;
+        }
+
+        .metar-station-desc {
+            font-size: 0.6875rem;
+            color: var(--text-tertiary);
+            margin-bottom: var(--space-sm);
+        }
+
+        .metar-station-temp {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            line-height: 1;
+        }
+
+        .metar-station-details {
+            font-size: 0.6875rem;
+            color: var(--text-secondary);
+            margin-top: var(--space-xs);
+        }
+
+        .metar-consensus-row {
+            display: flex;
+            gap: var(--space-lg);
+            padding: var(--space-md);
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-sm);
+            margin-bottom: var(--space-sm);
+        }
+
+        .metar-consensus-item {
+            text-align: center;
+        }
+
+        .metar-consensus-label {
+            font-size: 0.625rem;
+            color: var(--text-tertiary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .metar-consensus-value {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        /* AFD / Forecast Discussion */
+        .afd-meta {
+            display: flex;
+            gap: var(--space-md);
+            margin-bottom: var(--space-md);
+            padding: var(--space-sm) var(--space-md);
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-sm);
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .afd-meta-item {
+            display: flex;
+            align-items: center;
+            gap: var(--space-xs);
+        }
+
+        .afd-synopsis {
+            background: linear-gradient(135deg, rgba(184, 134, 11, 0.08) 0%, rgba(245, 158, 11, 0.04) 100%);
+            border-left: 3px solid var(--warning);
+            padding: var(--space-md);
+            border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+            margin-bottom: var(--space-md);
+        }
+
+        .afd-synopsis-label {
+            font-size: 0.6875rem;
+            font-weight: 600;
+            color: var(--warning);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: var(--space-xs);
+        }
+
+        .afd-synopsis-text {
+            font-size: 0.9375rem;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        .afd-sections {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: var(--space-md);
+        }
+
+        .afd-section {
+            background: var(--bg-tertiary);
+            padding: var(--space-md);
+            border-radius: var(--radius-sm);
+        }
+
+        .afd-section-label {
+            font-size: 0.625rem;
+            font-weight: 600;
+            color: var(--text-tertiary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: var(--space-xs);
+        }
+
+        .afd-section-text {
+            font-size: 0.8125rem;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        /* SPC convective outlook badge */
+        .spc-outlook-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: var(--space-xs);
+            padding: var(--space-xs) var(--space-sm);
+            border-radius: var(--radius-sm);
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .spc-outlook-badge.risk-tstm { background: rgba(85, 187, 85, 0.15); color: #55BB55; border: 1px solid rgba(85, 187, 85, 0.4); }
+        .spc-outlook-badge.risk-mrgl { background: rgba(144, 238, 144, 0.15); color: #6DBF6D; border: 1px solid rgba(144, 238, 144, 0.4); }
+        .spc-outlook-badge.risk-slgt { background: rgba(245, 158, 11, 0.15); color: #F59E0B; border: 1px solid rgba(245, 158, 11, 0.4); }
+        .spc-outlook-badge.risk-enh { background: rgba(249, 115, 22, 0.15); color: #F97316; border: 1px solid rgba(249, 115, 22, 0.4); }
+        .spc-outlook-badge.risk-mdt { background: rgba(239, 68, 68, 0.15); color: #EF4444; border: 1px solid rgba(239, 68, 68, 0.4); }
+        .spc-outlook-badge.risk-high { background: rgba(185, 28, 28, 0.2); color: #DC2626; border: 1px solid rgba(185, 28, 28, 0.5); animation: pulse-border 2s ease-in-out infinite; }
+
+        @keyframes pulse-border {
+            0%, 100% { border-color: rgba(185, 28, 28, 0.5); }
+            50% { border-color: rgba(220, 38, 38, 1); box-shadow: 0 0 8px rgba(220, 38, 38, 0.4); }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .weather-container {
+                padding: var(--space-md);
+            }
+            
+            .current-conditions {
+                flex-direction: column;
+                text-align: center;
+                gap: var(--space-lg);
+            }
+            
+            .current-temp {
+                font-size: 3rem;
+            }
+            
+            .details-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            
+            .forecast-grid {
+                overflow-x: scroll;
+                -webkit-overflow-scrolling: touch;
+            }
+            
+            .hourly-grid {
+                overflow-x: scroll;
+                -webkit-overflow-scrolling: touch;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="weather-page">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <a href="/" class="logo">
+                    <div class="logo-icon">🧭</div>
+                    <span>Compass</span>
+                </a>
+            </div>
+            <div class="header-actions">
+                <button class="btn btn-primary" onclick="refreshWeather()">
+                    <span>↻</span>
+                    <span>Refresh</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="weather-container">
+            <!-- Page Header -->
+            <div class="weather-header">
+                <a href="/" class="weather-header-back">← Back to Dashboard</a>
+                <h1 class="weather-header-title">🌤️ Weather Report</h1>
+                <span class="weather-header-meta" id="report-timestamp">Loading...</span>
+            </div>
+
+            <!-- Loading State -->
+            <div id="loading-state">
+                <div class="weather-card">
+                    <div class="weather-card-body">
+                        <div class="loading">
+                            <div class="spinner"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Content Container -->
+            <div id="weather-content" style="display: none;">
+                <!-- Alerts Section -->
+                <div id="alerts-section"></div>
+
+                <!-- Current Conditions -->
+                <div class="weather-card">
+                    <div class="weather-card-header">
+                        <span class="weather-card-title">📍 Current Conditions</span>
+                        <span class="weather-card-badge" id="location-badge">Austin, TX</span>
+                    </div>
+                    <div class="weather-card-body">
+                        <div class="current-conditions">
+                            <div class="current-icon" id="current-icon">🌤️</div>
+                            <div class="current-info">
+                                <div class="current-temp" id="current-temp">--°</div>
+                                <div class="current-condition" id="current-condition">--</div>
+                                <div class="current-location" id="current-summary"></div>
+                            </div>
+                        </div>
+                        <div class="details-grid" id="details-grid"></div>
+                    </div>
+                </div>
+
+                <!-- Narrative / TTS Section -->
+                <div class="weather-card" id="narrative-card" style="display: none;">
+                    <div class="weather-card-header">
+                        <span class="weather-card-title">🤖 AI Meteorology Analysis</span>
+                        <span id="spc-outlook-badge" class="spc-outlook-badge" style="display: none;"></span>
+                    </div>
+                    <div class="weather-card-body">
+                        <div id="tts-section" style="display: none; margin-bottom: 1rem;">
+                            <div class="tts-controls">
+                                <button id="tts-play-button" class="tts-button" type="button">▶️ Play weather briefing</button>
+                                <span id="tts-status" class="tts-status">Ready</span>
+                            </div>
+                            <audio id="tts-audio" class="tts-audio" controls preload="none"></audio>
+                            <div id="tts-script" class="tts-script"></div>
+                        </div>
+                        <div class="narrative-content" id="narrative-content"></div>
+                    </div>
+                </div>
+
+                <!-- Hourly Forecast -->
+                <div class="weather-card">
+                    <div class="weather-card-header">
+                        <span class="weather-card-title">⏰ Hourly Forecast</span>
+                        <span class="weather-card-badge">Next 24 Hours</span>
+                    </div>
+                    <div class="weather-card-body">
+                        <div class="hourly-grid" id="hourly-grid"></div>
+                    </div>
+                </div>
+
+                <!-- 3-Day Forecast -->
+                <div class="weather-card">
+                    <div class="weather-card-header">
+                        <span class="weather-card-title">📅 3-Day Forecast</span>
+                    </div>
+                    <div class="weather-card-body">
+                        <div class="forecast-grid" id="forecast-grid"></div>
+                    </div>
+                </div>
+
+                <!-- Nearby Weather Stations (PWS) -->
+                <div class="weather-card" id="pws-card" style="display: none;">
+                    <div class="weather-card-header">
+                        <span class="weather-card-title">🏠 Nearby Weather Stations</span>
+                        <span class="weather-card-badge" id="pws-badge">PWS</span>
+                    </div>
+                    <div class="weather-card-body">
+                        <div id="pws-consensus" style="margin-bottom: 1rem;"></div>
+                        <div id="pws-stations" style="overflow-x: auto;"></div>
+                    </div>
+                </div>
+
+                <!-- Official METAR / ASOS Observations -->
+                <div class="weather-card" id="metar-card" style="display: none;">
+                    <div class="weather-card-header">
+                        <span class="weather-card-title">✈️ Official METAR Observations</span>
+                        <span class="weather-card-badge" id="metar-badge">NWS ASOS</span>
+                    </div>
+                    <div class="weather-card-body">
+                        <div id="metar-content"></div>
+                    </div>
+                </div>
+
+                <!-- NWS Area Forecast Discussion -->
+                <div class="weather-card" id="afd-card" style="display: none;">
+                    <div class="weather-card-header">
+                        <span class="weather-card-title">📋 NWS Forecast Discussion</span>
+                        <span class="weather-card-badge" id="afd-badge">AFD</span>
+                    </div>
+                    <div class="weather-card-body">
+                        <div id="afd-content"></div>
+                    </div>
+                </div>
+
+                <!-- Data Sources -->
+                <div class="weather-card">
+                    <div class="weather-card-header">
+                        <span class="weather-card-title">📡 Data Sources</span>
+                    </div>
+                    <div class="weather-card-body">
+                        <div class="sources-grid" id="sources-grid"></div>
+                    </div>
+                </div>
+
+                <!-- Freshness -->
+                <div class="freshness-bar">
+                    <div class="freshness-indicator">
+                        <span class="freshness-dot" id="freshness-dot"></span>
+                        <span id="freshness-text">Report generated just now</span>
+                    </div>
+                    <span id="freshness-timestamp">--</span>
+                </div>
+            </div>
+
+            <!-- Error State -->
+            <div id="error-state" style="display: none;">
+                <div class="error-state">
+                    <div class="error-state-icon">🌤️</div>
+                    <div class="error-state-title">Weather data unavailable</div>
+                    <div class="error-state-text">Unable to load the latest meteorology report.</div>
+                    <button class="btn btn-primary" onclick="loadWeatherReport()">Try Again</button>
+                </div>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>Compass Weather Report — <a href="/">Dashboard</a> — <a href="/api/meteorology/latest">API</a></p>
+        </footer>
+    </div>
+
+    <script src="/static/weather.js"></script>
+</body>
+</html>
