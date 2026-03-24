@@ -1,0 +1,414 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="$ROOT/.env"
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+if [[ -n "${GMAIL_ADMIN_ACCOUNT:-}" && -z "${GOG_ACCOUNT:-}" ]]; then
+  export GOG_ACCOUNT="$GMAIL_ADMIN_ACCOUNT"
+fi
+
+have() { command -v "$1" >/dev/null 2>&1; }
+err() { printf 'gmail-admin: %s\n' "$*" >&2; }
+die() { err "$*"; exit 1; }
+need_gog() {
+  have gog || die "gog is not installed. Run $ROOT/scripts/install-gog.sh or install gogcli first."
+}
+need_python() {
+  have python3 || die "python3 is required."
+}
+
+default_max=100
+
+usage() {
+  cat <<USAGE
+Usage:
+  gmail-admin doctor
+  gmail-admin auth <credentials|add|status|list|services|manage> [...]
+  gmail-admin list [query]
+  gmail-admin search <query>
+  gmail-admin labels [subcommand ...]
+  gmail-admin archive (--query <q> | <messageId>...) [--max N] [--yes]
+  gmail-admin trash (--query <q> | <messageId>...) [--max N] [--yes]
+  gmail-admin delete (--query <q> | <messageId>...) [--max N] [--yes]
+  gmail-admin apply-label <label> (--query <q> | <messageId>...) [--max N] [--yes]
+  gmail-admin remove-label <label> (--query <q> | <messageId>...) [--max N] [--yes]
+  gmail-admin plan-filters [options]
+
+Notes:
+  - destructive operations are preview-only unless --yes is passed
+  - list = thread search
+  - search = message-level search
+USAGE
+}
+
+json_message_ids_from_query() {
+  local query="$1"
+  local max="$2"
+  gog gmail messages search "$query" --max "$max" --json |
+    python3 -c 'import json,sys; data=json.load(sys.stdin); [print(m.get("id","")) for m in data.get("messages",[]) if m.get("id")]'
+}
+
+preview_query() {
+  local query="$1"
+  local max="$2"
+  printf 'Preview query: %s\n' "$query" >&2
+  gog gmail messages search "$query" --max "$max"
+}
+
+parse_target_args() {
+  local mode_var="$1"
+  local value_var="$2"
+  local max_var="$3"
+  local yes_var="$4"
+  shift 4
+
+  local mode="ids"
+  local value=""
+  local max="$default_max"
+  local yes=0
+  local ids=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --query)
+        shift
+        [[ $# -gt 0 ]] || die "--query requires a value"
+        mode="query"
+        value="$1"
+        ;;
+      --max)
+        shift
+        [[ $# -gt 0 ]] || die "--max requires a value"
+        max="$1"
+        ;;
+      --yes)
+        yes=1
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        ids+=("$1")
+        ;;
+    esac
+    shift || true
+  done
+
+  if [[ "$mode" == "query" ]]; then
+    :
+  else
+    [[ ${#ids[@]} -gt 0 ]] || die "provide message IDs or --query <gmail-query>"
+    value="${ids[*]}"
+  fi
+
+  printf -v "$mode_var" '%s' "$mode"
+  printf -v "$value_var" '%s' "$value"
+  printf -v "$max_var" '%s' "$max"
+  printf -v "$yes_var" '%s' "$yes"
+}
+
+confirm_or_preview() {
+  local action="$1"
+  local mode="$2"
+  local value="$3"
+  local max="$4"
+  local yes="$5"
+
+  if [[ "$mode" == "query" ]]; then
+    preview_query "$value" "$max"
+  else
+    printf 'Target message IDs (%s): %s\n' "$action" "$value" >&2
+  fi
+
+  if [[ "$yes" != "1" ]]; then
+    printf '\nDry run only. Re-run with --yes to execute %s.\n' "$action" >&2
+    return 1
+  fi
+  return 0
+}
+
+collect_ids() {
+  local mode="$1"
+  local value="$2"
+  local max="$3"
+  if [[ "$mode" == "query" ]]; then
+    json_message_ids_from_query "$value" "$max"
+  else
+    printf '%s\n' $value
+  fi
+}
+
+cmd_doctor() {
+  need_python
+  if have gog; then
+    echo "gog: $(command -v gog)"
+    gog --version || true
+  else
+    echo "gog: not installed"
+  fi
+  echo "python3: $(command -v python3)"
+  echo "workspace: $ROOT"
+  echo "account(default): ${GOG_ACCOUNT:-<unset>}"
+  echo "credentials(path hint): ${GMAIL_ADMIN_CREDENTIALS_JSON:-<unset>}"
+  if have gog; then
+    echo
+    echo "Auth accounts:"
+    gog auth list || true
+    echo
+    echo "Auth status:"
+    gog auth status || true
+  fi
+}
+
+cmd_auth() {
+  need_gog
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    credentials)
+      [[ $# -ge 1 ]] || die "usage: gmail-admin auth credentials /path/to/client_secret.json"
+      exec gog auth credentials "$1"
+      ;;
+    add)
+      [[ $# -ge 1 ]] || die "usage: gmail-admin auth add you@gmail.com [--readonly] [--manual]"
+      local account="$1"
+      shift
+      local args=(auth add "$account" --services gmail)
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --readonly) args+=(--gmail-scope readonly) ;;
+          --manual) args+=(--manual) ;;
+          --force-consent) args+=(--force-consent) ;;
+          *) die "unknown auth add option: $1" ;;
+        esac
+        shift
+      done
+      exec gog "${args[@]}"
+      ;;
+    status)
+      exec gog auth status "$@"
+      ;;
+    list)
+      exec gog auth list "$@"
+      ;;
+    services)
+      exec gog auth services "$@"
+      ;;
+    manage)
+      exec gog auth manage "$@"
+      ;;
+    ""|-h|--help)
+      cat <<HELP
+Usage:
+  gmail-admin auth credentials /path/to/client_secret.json
+  gmail-admin auth add you@gmail.com [--readonly] [--manual] [--force-consent]
+  gmail-admin auth status
+  gmail-admin auth list
+  gmail-admin auth services
+  gmail-admin auth manage
+HELP
+      ;;
+    *)
+      die "unknown auth subcommand: $sub"
+      ;;
+  esac
+}
+
+cmd_list() {
+  need_gog
+  local query="${*:-in:inbox newer_than:30d}"
+  exec gog gmail search "$query" --max 20
+}
+
+cmd_search() {
+  need_gog
+  [[ $# -gt 0 ]] || die "usage: gmail-admin search <query>"
+  exec gog gmail messages search "$*" --max 20
+}
+
+cmd_labels() {
+  need_gog
+  if [[ $# -eq 0 ]]; then
+    exec gog gmail labels list
+  fi
+  exec gog gmail labels "$@"
+}
+
+cmd_archive_or_trash() {
+  local subcmd="$1"
+  shift
+  need_gog
+  local mode value max yes
+  parse_target_args mode value max yes "$@"
+  confirm_or_preview "$subcmd" "$mode" "$value" "$max" "$yes" || exit 0
+
+  if [[ "$mode" == "query" ]]; then
+    exec gog gmail "$subcmd" --query "$value" --max "$max"
+  else
+    # shellcheck disable=SC2086
+    exec gog gmail "$subcmd" $value
+  fi
+}
+
+cmd_delete() {
+  need_gog
+  need_python
+  local mode value max yes
+  parse_target_args mode value max yes "$@"
+  confirm_or_preview "delete" "$mode" "$value" "$max" "$yes" || exit 0
+
+  mapfile -t ids < <(collect_ids "$mode" "$value" "$max")
+  [[ ${#ids[@]} -gt 0 ]] || die "no message IDs resolved"
+  exec gog gmail batch delete "${ids[@]}"
+}
+
+cmd_modify_labels() {
+  local op="$1"
+  local label="$2"
+  shift 2
+  need_gog
+  need_python
+  [[ -n "$label" ]] || die "label is required"
+
+  local mode value max yes
+  parse_target_args mode value max yes "$@"
+  confirm_or_preview "$op $label" "$mode" "$value" "$max" "$yes" || exit 0
+
+  mapfile -t ids < <(collect_ids "$mode" "$value" "$max")
+  [[ ${#ids[@]} -gt 0 ]] || die "no message IDs resolved"
+
+  local flag
+  if [[ "$op" == "apply-label" ]]; then
+    flag="--add"
+  else
+    flag="--remove"
+  fi
+
+  local id
+  for id in "${ids[@]}"; do
+    gog gmail messages modify "$id" "$flag" "$label"
+  done
+}
+
+cmd_plan_filters() {
+  need_python
+  local from=""
+  local to=""
+  local subject=""
+  local query=""
+  local label=""
+  local archive=false
+  local mark_read=false
+  local trash=false
+  local out=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --from) shift; from="${1:-}" ;;
+      --to) shift; to="${1:-}" ;;
+      --subject) shift; subject="${1:-}" ;;
+      --query) shift; query="${1:-}" ;;
+      --label|--add-label) shift; label="${1:-}" ;;
+      --archive) archive=true ;;
+      --mark-read) mark_read=true ;;
+      --trash) trash=true ;;
+      --out) shift; out="${1:-}" ;;
+      -h|--help)
+        cat <<HELP
+Usage:
+  gmail-admin plan-filters [--from X] [--to X] [--subject X] [--query X] [--label X] [--archive] [--mark-read] [--trash] [--out PATH]
+HELP
+        exit 0
+        ;;
+      *) die "unknown option for plan-filters: $1" ;;
+    esac
+    shift || true
+  done
+
+  [[ -n "$from$to$subject$query" ]] || die "provide at least one match condition"
+  [[ -n "$out" ]] || out="$ROOT/plans/filter-plan-$(date -u +%Y%m%dT%H%M%SZ).json"
+  mkdir -p "$(dirname "$out")"
+
+  python3 - "$from" "$to" "$subject" "$query" "$label" "$archive" "$mark_read" "$trash" "$out" <<'PY'
+import json, sys, pathlib
+from_, to, subject, query, label, archive, mark_read, trash, out = sys.argv[1:]
+plan = {
+  "match": {},
+  "actions": {
+    "addLabel": [label] if label else [],
+    "archive": archive == "true",
+    "markRead": mark_read == "true",
+    "trash": trash == "true",
+  },
+  "apply": {"mode": "manual-review"},
+}
+if from_:
+    plan["match"]["from"] = from_
+if to:
+    plan["match"]["to"] = to
+if subject:
+    plan["match"]["subject"] = subject
+if query:
+    plan["match"]["query"] = query
+cmd = ["gog", "gmail", "filters", "create"]
+if from_:
+    cmd += ["--from", from_]
+if to:
+    cmd += ["--to", to]
+if subject:
+    cmd += ["--subject", subject]
+if query:
+    cmd += ["--query", query]
+if label:
+    cmd += ["--add-label", label]
+if archive == "true":
+    cmd.append("--archive")
+if mark_read == "true":
+    cmd.append("--mark-read")
+if trash == "true":
+    cmd.append("--trash")
+plan["apply"]["gogPreview"] = " ".join(json.dumps(x) if ' ' in x else x for x in cmd)
+path = pathlib.Path(out)
+path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+print(str(path))
+PY
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    doctor) cmd_doctor "$@" ;;
+    auth) cmd_auth "$@" ;;
+    list) cmd_list "$@" ;;
+    search) cmd_search "$@" ;;
+    labels) cmd_labels "$@" ;;
+    archive) cmd_archive_or_trash archive "$@" ;;
+    trash) cmd_archive_or_trash trash "$@" ;;
+    delete) cmd_delete "$@" ;;
+    apply-label)
+      [[ $# -ge 1 ]] || die "usage: gmail-admin apply-label <label> (--query <q> | <messageId>...) [--yes]"
+      local label="$1"; shift
+      cmd_modify_labels apply-label "$label" "$@"
+      ;;
+    remove-label)
+      [[ $# -ge 1 ]] || die "usage: gmail-admin remove-label <label> (--query <q> | <messageId>...) [--yes]"
+      local label="$1"; shift
+      cmd_modify_labels remove-label "$label" "$@"
+      ;;
+    plan-filters) cmd_plan_filters "$@" ;;
+    -h|--help|"") usage ;;
+    *) die "unknown command: $cmd" ;;
+  esac
+}
+
+main "$@"
