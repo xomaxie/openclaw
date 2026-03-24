@@ -1,0 +1,17 @@
+{
+  "name": "notifications-from-noreply-example",
+  "match": {
+    "from": "noreply@example.com",
+    "query": "has:attachment"
+  },
+  "actions": {
+    "addLabel": ["Notifications"],
+    "archive": true,
+    "markRead": false,
+    "trash": false
+  },
+  "apply": {
+    "mode": "manual-review",
+    "gogPreview": "gog gmail filters create --from 'noreply@example.com' --query 'has:attachment' --add-label 'Notifications' --archive"
+  }
+}
