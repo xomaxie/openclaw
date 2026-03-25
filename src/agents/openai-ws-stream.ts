@@ -872,11 +872,12 @@ export function createOpenAIWebSocketStreamFn(
               provider: model.provider,
               id: model.id,
             });
-            const hasVisibleContent = Array.isArray(assistantMsg.content) && assistantMsg.content.length > 0;
+            const blocks = Array.isArray(assistantMsg.content) ? assistantMsg.content : [];
+            const hasVisibleContent = blocks.some((block) => block.type !== "thinking");
             if (!hasVisibleContent && assistantMsg.stopReason === "stop") {
               reject(
                 new Error(
-                  `OpenAI-compatible provider returned empty assistant completion for ${model.provider}/${model.id}`,
+                  `OpenAI-compatible provider returned non-visible assistant completion for ${model.provider}/${model.id}`,
                 ),
               );
               return;
