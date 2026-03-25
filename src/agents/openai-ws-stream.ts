@@ -954,6 +954,25 @@ async function fallbackToHttp(
   const mergedOptions = signal ? { ...options, signal } : options;
   const httpStream = streamSimple(model, context, mergedOptions);
   for await (const event of httpStream) {
+    if (event.type === "done") {
+      const blocks = Array.isArray(event.message?.content) ? event.message.content : [];
+      const hasVisibleContent = blocks.some((block) => block.type !== "thinking");
+      if (!hasVisibleContent && event.reason === "stop") {
+        eventStream.push({
+          type: "error",
+          reason: "error",
+          error: buildStreamErrorAssistantMessage({
+            model: {
+              api: model.api,
+              provider: model.provider,
+              id: model.id,
+            },
+            errorMessage: `OpenAI-compatible provider returned non-visible assistant completion for ${model.provider}/${model.id}`,
+          }),
+        });
+        return;
+      }
+    }
     eventStream.push(event);
   }
 }
